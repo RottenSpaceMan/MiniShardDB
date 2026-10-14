@@ -1,8 +1,8 @@
-NUM_SHARDS = 8
-SHARD_DIR = "data/shards/"
-META_DB = "data/meta.db"
-BASE_DB = "data/base.db"
-
+NUM_SHARDS: int = 8
+SHARD_DIR: str = "data/shards/"
+META_DB: str = "data/meta.db"
+BASE_DB: str = "data/base.db"
+AUDIT_DB: str = "data/audit.db"
 def shard_of(cust_id: int) -> int:
     """
     Determine the shard for a given customer ID.

@@ -4,7 +4,29 @@
 
 ## What it is
 
-MiniShardDB is designed to horizontally fragment the `Orders` and `Customers` relations across 8 SQLite shards using hash partitioning on `cust_id`. The final benchmark target is 1M orders. A **coordinator** layer gives clients *fragmentation & location transparency*: they write ordinary SQL and never know the data is split. Point queries on `order_id` use per-shard Bloom filters to avoid scanning most shards; false positives may cause a small number of additional shard probes; analytical aggregations run **in parallel** across shards and merge at the coordinator. All access passes through an **RBAC gate** (admin / analyst / auditor) with a parameterized-query-only execution path and an audit log.
+MiniShardDB is designed to horizontally fragment the `Orders` and `Customers` relations across 8 SQLite shards using hash partitioning on `cust_id`. The final benchmark target is 1M orders. A **coordinator** layer gives clients *fragmentation & location transparency*: they write ordinary SQL and never know the data is split. The current serial vertical slice routes point queries on `order_id` with per-shard Bloom filters and merges grouped results; parallel aggregation and the **RBAC gate** (admin / analyst / auditor) with parameterized execution and audit logging are planned next.
+
+## Current status
+
+The current working tree has the data-generation and serial query-routing
+vertical slice in place:
+
+- Data generation creates a reproducible centralized `data/base.db`, loads
+  eight shards, and builds per-shard Bloom filters.
+- `Coordinator.route` handles `cust_id`, `order_id`, and unknown predicates.
+- `Coordinator.merge` flattens normal results and combines grouped numeric
+  results.
+- The Bloom filter, parser, routing, flattening, and grouped-merge tests pass
+  (`11 passed`).
+- `executor.parallel` exists, but `Coordinator.run` still executes shards
+  serially.
+- `parser.parse_table` now extracts the first referenced table for the
+  authorization layer, and parser tests cover the supported statement forms.
+- `security.py` contains the login, permission-check, and audit scaffolding.
+  The CLI still needs an end-to-end authorization test and verification.
+
+The benchmark results, report figures, and performance targets below are
+planned deliverables; they have not yet been measured in this repository.
 
 ## Problem being addressed
 
@@ -62,13 +84,11 @@ databases are derived copies.
 
 Python 3.10+ stdlib (`sqlite3`, `multiprocessing`, `pickle`), `matplotlib` (plots), `pytest` (tests).
 
-## Planned Quickstart
+## Quickstart: implemented data pipeline
 
 ```bash
-python gen_data.py --fresh  # generate 1K orders, seeded & reproducible; Move to 1M for final benchmark
-python shard.py             # create + load 8 shards, build & pickle blooms
-python cli.py "SELECT region, SUM(amount) FROM orders WHERE cust_id = 42 GROUP BY region"
-python cli.py "SELECT * FROM orders WHERE order_id = 777"     # bloom-routed
+python -m pytest -q         # currently: 11 passing tests
+python gen_data.py --fresh  # generate 1K orders by default and build 8 shards
 ```
 
 Data generation uses worker processes for Faker and keeps SQLite writes in the
@@ -85,9 +105,18 @@ Do not run two `gen_data.py --fresh` commands against the same `data/` directory
 at the same time. They delete and recreate the same SQLite and Bloom-filter
 files.
 
+The query CLI is not part of the working quickstart yet. It will become
+available after the RBAC and audit implementation is completed. The intended
+commands are:
+
+```bash
+python cli.py "SELECT * FROM orders WHERE cust_id = 42"
+python cli.py "SELECT * FROM orders WHERE order_id = 777"
+```
+
 ---
 
-## TODO
+## Next steps
 
 ### Phase 0 - Cleanup & config
 - [x] Repo structure, venv, pytest running
@@ -102,16 +131,17 @@ files.
 ### Phase 1 - Week 1: vertical slice (serial, end-to-end)
 - [x] `gen_data.py` - seeded Customers + Orders, assigns shards via `shard_of`
 - [x] `Shard` bodies: `create`, `insert_orders`, `build_bloom` (guard n=0, pickle to `.bloom`), `execute`, `bloom_has`
-- [x] Verify: `data/shard3.db` contains only `cust_id % 8 == 3` rows
-- [ ] `Coordinator.route` - cust_id case first, then order_id/bloom case
+- [x] Verify and document that each shard contains only `cust_id % 8 == shard_number` rows
+- [x] `Coordinator.route` - `cust_id` case, then `order_id`/Bloom case
 - [ ] **End-to-end point query through `cli.py` works - screenshot**
-- [ ] Aggregates: GROUP BY merge across shards
-- [ ] `AuthGate` bodies: `login`, `allow`, `audit`; wire into CLI
-- [ ] 3+ pytest tests (routing, merge, RBAC deny) + commit
+- [x] Aggregates: GROUP BY merge across shards (unit-tested)
+- [x] Add end-to-end tests for `AuthGate.login`, `allow`, and `audit`
+- [x] Parser tests for table extraction, plus routing and merge tests
 
 ### Phase 2 - Week 2: parallelism
-- [ ] Parallel path in `Coordinator.run` (Pool via `executor.parallel`)
-- [ ] Parallel local join (Customers and Orders co-located by `cust_id`)
+- [x] `executor.parallel` worker helper
+- [ ] Parallel path in `Coordinator.run` (use `executor.parallel`)
+- [ ] Demonstrate a local join (Customers and Orders are co-located by `cust_id`)
 - [ ] Scale data to 1M rows
 - [ ] **E2:** speedup plot, 1/2/4/8 workers
 - [ ] **E3:** MiniShardDB vs. single centralized SQLite file

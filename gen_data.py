@@ -4,6 +4,7 @@ from concurrent.futures import ProcessPoolExecutor
 import os
 import random
 import sqlite3
+from collections.abc import Sequence
 import time
 
 from faker import Faker
@@ -12,7 +13,7 @@ import config
 import shard
 
 
-def parse_args():
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate Customer and Order data.")
     parser.add_argument("--num-orders", type=int, default=1000, help="Number of orders to generate.")
     parser.add_argument("--customer-max-orders", type=int, default=5, help="Maximum number of orders per customer.")
@@ -34,7 +35,9 @@ def parse_args():
     return args
 
 
-def generate_data_batch(batch: tuple) -> tuple:
+def generate_data_batch(
+    batch: tuple[int, list[tuple[int, int, int]]],
+) -> tuple[list[tuple[int, str, str]], list[tuple[int, int, float, str, str]]]:
     """Generate one independent Faker batch in a worker process."""
     batch_seed, customer_specs = batch
     fake = Faker()
@@ -56,13 +59,18 @@ def generate_data_batch(batch: tuple) -> tuple:
 
     return customers, orders
 
-def insert_in_batches(connection: sqlite3.Connection, sql: str, rows: list, batch_size: int):
+def insert_in_batches(
+    connection: sqlite3.Connection,
+    sql: str,
+    rows: Sequence[tuple[object, ...]],
+    batch_size: int,
+) -> None:
     for start in range(0, len(rows), batch_size):
         connection.executemany(sql, rows[start:start + batch_size])
         connection.commit()
 
 
-def remove_existing_databases():
+def remove_existing_databases() -> None:
     if os.path.exists(config.BASE_DB):
         print(f"Deleting existing base database: {config.BASE_DB}")
         os.remove(config.BASE_DB)
@@ -78,7 +86,7 @@ def remove_existing_databases():
     print()
 
 
-def main():
+def main() -> None:
     args = parse_args()
     random.seed(args.seed)
 
