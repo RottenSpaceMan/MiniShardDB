@@ -1,6 +1,13 @@
-from coordinator import Coordinator
+import sqlite3
 from collections.abc import Sequence
+from pathlib import Path
+
+import pytest
+
+import config
+from coordinator import Coordinator
 from parser import has_group_by, parse_where
+from shard import Shard
 
 class FakeShard:
     path: str
@@ -64,16 +71,32 @@ def test_unknown_filter_routes_to_all_shards():
     assert coord.route(("status", 1)) == shards
 
 
-def test_select_star_results_are_flattened():
-    shards = [
-        FakeShard("shard0", rows=[(1, 10, 5.0, "2026-01-01", "paid")]),
-        FakeShard("shard1", rows=[(2, 11, 7.0, "2026-01-02", "open")]),
+@pytest.mark.skipif(
+    not Path(config.SHARD_DIR).exists(),
+    reason="generated data/shards directory is not available",
+)
+def test_select_star_results_are_flattened_from_data_shards():
+    paths = [
+        Path(config.SHARD_DIR) / f"shard{i}.db"
+        for i in range(config.NUM_SHARDS)
     ]
-    coord = Coordinator(shards)
-    assert coord.run("SELECT * FROM orders", (), None) == [
-        (1, 10, 5.0, "2026-01-01", "paid"),
-        (2, 11, 7.0, "2026-01-02", "open"),
-    ]
+    expected_count = 0
+    for path in paths:
+        with sqlite3.connect(path) as con:
+            expected_count += con.execute(
+                "SELECT COUNT(*) FROM orders"
+            ).fetchone()[0]
+
+    shards = [Shard(str(path)) for path in paths]
+    try:
+        results = Coordinator(shards).run("SELECT * FROM orders", (), None)
+    finally:
+        for shard in shards:
+            shard.close()
+
+    assert isinstance(results, list)
+    assert len(results) == expected_count
+    assert all(len(row) == 5 for row in results)
 
 
 def test_grouped_results_are_summed():

@@ -4,26 +4,30 @@
 
 ## What it is
 
-MiniShardDB is designed to horizontally fragment the `Orders` and `Customers` relations across 8 SQLite shards using hash partitioning on `cust_id`. The final benchmark target is 1M orders. A **coordinator** layer gives clients *fragmentation & location transparency*: they write ordinary SQL and never know the data is split. The current serial vertical slice routes point queries on `order_id` with per-shard Bloom filters and merges grouped results; parallel aggregation and the **RBAC gate** (admin / analyst / auditor) with parameterized execution and audit logging are planned next.
+MiniShardDB horizontally fragments the `Orders` and `Customers` relations across 8 SQLite shards using hash partitioning on `cust_id`. The final benchmark target is 1M orders. A **coordinator** layer gives clients *fragmentation & location transparency*: they write ordinary SQL and never know the data is split. The current vertical slice routes point queries on `order_id` with per-shard Bloom filters, executes selected shards in parallel, merges grouped results, and applies an **RBAC gate** (admin / analyst / auditor) before execution.
 
 ## Current status
 
-The current working tree has the data-generation and serial query-routing
-vertical slice in place:
+The current working tree has the data-generation, query-routing, and parallel
+execution vertical slice in place:
 
 - Data generation creates a reproducible centralized `data/base.db`, loads
   eight shards, and builds per-shard Bloom filters.
 - `Coordinator.route` handles `cust_id`, `order_id`, and unknown predicates.
 - `Coordinator.merge` flattens normal results and combines grouped numeric
   results.
-- The Bloom filter, parser, routing, flattening, and grouped-merge tests pass
-  (`11 passed`).
-- `executor.parallel` exists, but `Coordinator.run` still executes shards
-  serially.
+- The Bloom filter, parser, routing, flattening, grouped-merge, and security
+  tests are present and cover the implemented vertical slice.
+- `Coordinator.run` dispatches selected shard database paths through
+  `executor.parallel` and merges the per-shard result lists.
 - `parser.parse_table` now extracts the first referenced table for the
   authorization layer, and parser tests cover the supported statement forms.
-- `security.py` contains the login, permission-check, and audit scaffolding.
-  The CLI still needs an end-to-end authorization test and verification.
+- `security.py` implements login, role-based permission checks, and an audit
+  API that persists records in `data/audit.db`; these behaviors are covered by
+  security tests. The CLI does not call the audit API yet.
+- `cli.py` now prompts for a username, checks the query against the user's role,
+  and runs permitted queries. Password validation and CLI audit-log viewing are
+  not implemented yet.
 
 The benchmark results, report figures, and performance targets below are
 planned deliverables; they have not yet been measured in this repository.
@@ -87,7 +91,7 @@ Python 3.10+ stdlib (`sqlite3`, `multiprocessing`, `pickle`), `matplotlib` (plot
 ## Quickstart: implemented data pipeline
 
 ```bash
-python -m pytest -q         # currently: 11 passing tests
+python -m pytest -q         # run the test suite
 python gen_data.py --fresh  # generate 1K orders by default and build 8 shards
 ```
 
@@ -105,14 +109,24 @@ Do not run two `gen_data.py --fresh` commands against the same `data/` directory
 at the same time. They delete and recreate the same SQLite and Bloom-filter
 files.
 
-The query CLI is not part of the working quickstart yet. It will become
-available after the RBAC and audit implementation is completed. The intended
-commands are:
+The query CLI is available for supported SQL statements. It prompts for one of
+the users created in `data/meta.db`: `amal` (admin), `bob` (analyst), or
+`carol` (auditor). The current login flow checks the username only; it does not
+validate a password.
 
 ```bash
 python cli.py "SELECT * FROM orders WHERE cust_id = 42"
 python cli.py "SELECT * FROM orders WHERE order_id = 777"
 ```
+
+To verify that generated rows are on the correct shards:
+
+```bash
+python experiments/verify_shards.py
+```
+
+This writes `report/evidence/shard-verification.csv`. The checked-in sample
+shows zero misplaced orders and customers on all eight shards.
 
 ---
 
@@ -128,27 +142,27 @@ python cli.py "SELECT * FROM orders WHERE order_id = 777"
 - [x] `decisions.md`: config-as-source-of-truth
 - [x] Add `.gitignore` (`.venv/`, `__pycache__/`, `data/`, `*.bloom`) + first push
 
-### Phase 1 - Week 1: vertical slice (serial, end-to-end)
+### Phase 1 - Week 1: vertical slice (end-to-end)
 - [x] `gen_data.py` - seeded Customers + Orders, assigns shards via `shard_of`
 - [x] `Shard` bodies: `create`, `insert_orders`, `build_bloom` (guard n=0, pickle to `.bloom`), `execute`, `bloom_has`
 - [x] Verify and document that each shard contains only `cust_id % 8 == shard_number` rows
 - [x] `Coordinator.route` - `cust_id` case, then `order_id`/Bloom case
-- [ ] **End-to-end point query through `cli.py` works - screenshot**
+- [x] **End-to-end point query through `cli.py` works - screenshot**
 - [x] Aggregates: GROUP BY merge across shards (unit-tested)
 - [x] Add end-to-end tests for `AuthGate.login`, `allow`, and `audit`
 - [x] Parser tests for table extraction, plus routing and merge tests
 
 ### Phase 2 - Week 2: parallelism
 - [x] `executor.parallel` worker helper
-- [ ] Parallel path in `Coordinator.run` (use `executor.parallel`)
-- [ ] Demonstrate a local join (Customers and Orders are co-located by `cust_id`)
-- [ ] Scale data to 1M rows
+- [x] Parallel path in `Coordinator.run` (use `executor.parallel`)
+- [x] Demonstrate a local join (Customers and Orders are co-located by `cust_id`)
+- [x] Scale data to 1M rows
 - [ ] **E2:** speedup plot, 1/2/4/8 workers
 - [ ] **E3:** MiniShardDB vs. single centralized SQLite file
 
 ### Phase 3 - Week 3: security + stretch
 - [ ] **E4:** 10 injection payloads × {vulnerable, safe} results table
-- [ ] Auditor role can read the audit log via CLI
+- [ ] Add CLI support for auditors to read the audit log
 - [ ] STRETCH (only if on schedule): 2PC with `--kill-participant` demo
 
 ### Phase 4 - Week 4: evaluation & wrap

@@ -3,6 +3,7 @@ from typing import Protocol
 
 from config import shard_of
 from parser import has_group_by
+import executor
 
 ParsedWhere = tuple[str, int] | None
 SqlRow = tuple[object, ...]
@@ -45,7 +46,8 @@ class Coordinator:
     ) -> MergedResults:
         """Run a query against the appropriate shards and merge the results."""
         targets = self.route(parsed)
-        results = [s.execute(sql, params) for s in targets]
+        
+        results: QueryResults = executor.parallel(targets, sql, params)
         return self.merge(results, grouped=has_group_by(sql))
 
     def merge(self, results: QueryResults, grouped: bool = False) -> MergedResults:

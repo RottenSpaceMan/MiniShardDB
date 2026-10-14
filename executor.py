@@ -1,11 +1,15 @@
 import sqlite3
 from collections.abc import Sequence
 from multiprocessing import Pool
-import shard
+from typing import Protocol
 
 
 SqlRow = tuple[object, ...]
 ShardJob = tuple[str, str, Sequence[object]]
+
+
+class ShardTarget(Protocol):
+    path: str
 
 
 def run_on_shard(args: ShardJob) -> list[SqlRow]:
@@ -16,7 +20,7 @@ def run_on_shard(args: ShardJob) -> list[SqlRow]:
 
 
 def parallel(
-    targets: Sequence[shard.Shard],
+    targets: Sequence[ShardTarget],
     sql: str,
     params: Sequence[object] = (),
     workers: int | None = None,
