@@ -157,10 +157,13 @@ shows zero misplaced orders and customers on all eight shards.
 - [x] Parallel path in `Coordinator.run` (use `executor.parallel`)
 - [x] Demonstrate a local join (Customers and Orders are co-located by `cust_id`)
 - [x] Scale data to 1M rows
-- [ ] **E2:** speedup plot, 1/2/4/8 workers
-- [ ] **E3:** MiniShardDB vs. single centralized SQLite file
+- [x] Add `experiments/verify_perf.py` with cold-start, warm-pool, and centralized timing modes
+- [ ] **E2:** run the final 1/2/4/8-worker benchmark and generate the speedup plot
+- [ ] **E3:** benchmark MiniShardDB against the single centralized SQLite file and generate the comparison figure
 
 ### Phase 3 - Week 3: security + stretch
+- [ ] Add a supported-query parser that separates SQL structure from user-provided values
+- [ ] Parameterize extracted values with SQLite placeholders before shard execution
 - [ ] **E4:** 10 injection payloads × {vulnerable, safe} results table
 - [ ] Add CLI support for auditors to read the audit log
 - [ ] STRETCH (only if on schedule): 2PC with `--kill-participant` demo

@@ -43,11 +43,12 @@ class Coordinator:
         sql: str,
         params: Sequence[object],
         parsed: ParsedWhere,
+        workers: int | None = None
     ) -> MergedResults:
         """Run a query against the appropriate shards and merge the results."""
         targets = self.route(parsed)
         
-        results: QueryResults = executor.parallel(targets, sql, params)
+        results: QueryResults = executor.parallel(targets, sql, params, workers=workers)
         return self.merge(results, grouped=has_group_by(sql))
 
     def merge(self, results: QueryResults, grouped: bool = False) -> MergedResults:

@@ -6,10 +6,12 @@ from shard import Shard
 from parser import parse_where
 import config
 
-if __name__ == "__main__":
+def main()-> None:
     if len(sys.argv) != 2:
         sys.exit("Usage: python cli.py \"SQL query\"")
-    query: str = sys.argv[1]
+    run_query(sys.argv[1])
+
+def run_query(query: str)-> None:
     params: list[object] = []
     gate: AuthGate = AuthGate(config.META_DB)
     user: User = gate.login()
@@ -24,3 +26,6 @@ if __name__ == "__main__":
     coord: Coordinator = Coordinator(shards)
     for row in coord.run(query, params, parse_where(query)):
         print(row)
+
+if __name__ == "__main__":
+    main()
