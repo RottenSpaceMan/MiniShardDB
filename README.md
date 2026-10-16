@@ -28,7 +28,7 @@ execution vertical slice in place:
 - `cli.py` now prompts for a username, checks the query against the user's role,
   and runs permitted queries. Password validation and CLI audit-log viewing are
   not implemented yet.
-
+- Centralized SQLite was faster for cold execution because MiniShardDB incurred process-pool and multi-connection startup overhead. After pool reuse, MiniShardDB benefited from concurrent shard scans and outperformed the centralized baseline. Larger datasets are expected to reduce the relative impact of startup overhead, but ultimate scaling will depend on whether the workload is CPU-bound or limited by shared storage bandwidth.
 The benchmark results, report figures, and performance targets below are
 planned deliverables; they have not yet been measured in this repository.
 
@@ -158,8 +158,8 @@ shows zero misplaced orders and customers on all eight shards.
 - [x] Demonstrate a local join (Customers and Orders are co-located by `cust_id`)
 - [x] Scale data to 1M rows
 - [x] Add `experiments/verify_perf.py` with cold-start, warm-pool, and centralized timing modes
-- [ ] **E2:** run the final 1/2/4/8-worker benchmark and generate the speedup plot
-- [ ] **E3:** benchmark MiniShardDB against the single centralized SQLite file and generate the comparison figure
+- [x] **E2:** run the final 1/2/4/8-worker benchmark and generate the speedup plot
+- [x] **E3:** benchmark MiniShardDB against the single centralized SQLite file and generate the comparison figure
 
 ### Phase 3 - Week 3: security + stretch
 - [ ] Add a supported-query parser that separates SQL structure from user-provided values

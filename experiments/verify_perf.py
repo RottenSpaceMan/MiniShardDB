@@ -1,3 +1,5 @@
+"""Benchmark cold-start and warm-pool MiniShardDB execution."""
+
 import argparse
 import csv
 import math
@@ -5,9 +7,9 @@ import sqlite3
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from collections.abc import Callable
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT: Path = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import config
@@ -17,11 +19,12 @@ from parser import has_group_by, parse_where
 from shard import Shard
 
 
-DEFAULT_WORKERS = [1, 2, 4, 8]
-DEFAULT_SQL = "SELECT status, SUM(amount) FROM orders GROUP BY status"
+DEFAULT_WORKERS: list[int] = [1, 2, 4, 8]
+DEFAULT_SQL: str = "SELECT status, SUM(amount) FROM orders GROUP BY status"
 
 
 def parse_worker_series(value: str) -> list[int]:
+    """Parse a comma-separated positive worker-count list."""
     try:
         workers = [int(item.strip()) for item in value.split(",")]
     except ValueError as error:
@@ -35,7 +38,8 @@ def parse_worker_series(value: str) -> list[int]:
     return workers
 
 
-def timed(function: Any) -> tuple[float, Any]:
+def timed(function: Callable[[], object]) -> tuple[float, object]:
+    """Return a callable's result and elapsed wall-clock time."""
     start = time.perf_counter()
     result = function()
     return time.perf_counter() - start, result
@@ -46,6 +50,7 @@ def run_cold(
     query: str,
     worker_count: int,
 ) -> tuple[float, object]:
+    """Measure one cold-start coordinator execution."""
     return timed(
         lambda: coordinator.run(query, (), parse_where(query), workers=worker_count)
     )
@@ -56,8 +61,11 @@ def run_warm(
     pool: executor.PersistentPool,
     query: str,
 ) -> tuple[float, object]:
+    """Measure one query using an already-running worker pool."""
     targets = coordinator.route(parse_where(query))
-    elapsed, results = timed(lambda: pool.parallel(targets, query, ()))
+    start = time.perf_counter()
+    results = pool.parallel(targets, query, ())
+    elapsed = time.perf_counter() - start
     return elapsed, coordinator.merge(results, grouped=has_group_by(query))
 
 
@@ -65,21 +73,28 @@ def run_centralized(
     connection: sqlite3.Connection,
     query: str,
 ) -> tuple[float, list[tuple[object, ...]]]:
-    return timed(lambda: connection.execute(query).fetchall())
+    """Measure one query on a reused centralized SQLite connection."""
+    start = time.perf_counter()
+    result = connection.execute(query).fetchall()
+    return time.perf_counter() - start, result
 
 
 def run_centralized_cold(
     database_path: Path,
     query: str,
 ) -> tuple[float, list[tuple[object, ...]]]:
+    """Measure one query with a fresh centralized SQLite connection."""
     def execute() -> list[tuple[object, ...]]:
         with sqlite3.connect(database_path) as connection:
             return connection.execute(query).fetchall()
 
-    return timed(execute)
+    start = time.perf_counter()
+    result = execute()
+    return time.perf_counter() - start, result
 
 
 def comparable_result(result: object, grouped: bool) -> object:
+    """Normalize grouped coordinator results for comparison."""
     if not grouped:
         return result
     if isinstance(result, dict):
@@ -90,6 +105,7 @@ def comparable_result(result: object, grouped: bool) -> object:
 
 
 def results_match(left: object, right: object, grouped: bool) -> bool:
+    """Compare query results while tolerating grouped float round-off."""
     left = comparable_result(left, grouped)
     right = comparable_result(right, grouped)
     if grouped and isinstance(left, dict) and isinstance(right, dict):
@@ -110,6 +126,7 @@ def append_rows(
     repetition: int,
     seconds: float,
 ) -> None:
+    """Append one normalized benchmark measurement to the output rows."""
     rows.append(
         {
             "system": system,
@@ -122,6 +139,7 @@ def append_rows(
 
 
 def main() -> None:
+    """Run the selected cold/warm MiniShardDB and centralized benchmarks."""
     parser = argparse.ArgumentParser(
         description="Compare cold-start and warm-pool SQLite query performance."
     )

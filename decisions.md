@@ -8,4 +8,6 @@
 - Added config.AUDIT_DB constant to config.py.
 - Added end-to-end tests for AuthGate.login, allow, and audit.
 - Added an experiments/ directory for testing and benchmarking different approaches to sharding, Bloom filters, and SQLite performance.
-- Adde verify_shards script to experiments/ to verify that each shard contains only rows with cust_id % NUM_SHARDS == shard_number, writes to csv
+- Added verify_shards script to experiments/ to verify that each shard contains only rows with cust_id % NUM_SHARDS == shard_number, writes to csv
+15/10 22:00:
+- Reusing processing pool for shard verification to improve performance on warm starts
