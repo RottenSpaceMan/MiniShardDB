@@ -29,8 +29,9 @@ execution vertical slice in place:
   predicates are passed to SQLite as parameters. Injection payloads are rejected
   before shard execution.
 - `cli.py` prompts for a username, checks the query against the user's role,
-  audits permitted and denied queries, and runs permitted queries. Password
-  validation and CLI audit-log viewing are not implemented yet.
+  audits permitted and denied queries, and runs permitted queries. It also
+  supports `--audit` for administrators and auditors. Password validation is
+  not implemented yet.
 - Centralized SQLite was faster for cold execution because MiniShardDB incurred process-pool and multi-connection startup overhead. After pool reuse, MiniShardDB benefited from concurrent shard scans and outperformed the centralized baseline. Larger datasets are expected to reduce the relative impact of startup overhead, but ultimate scaling will depend on whether the workload is CPU-bound or limited by shared storage bandwidth.
 Bloom-filter, routing, parallelism, and injection evidence is checked into
 `report/evidence/`. The report, demo video, and final performance-target
@@ -121,6 +122,7 @@ validate a password.
 ```bash
 python cli.py "SELECT * FROM orders WHERE cust_id = 42"
 python cli.py "SELECT * FROM orders WHERE order_id = 777"
+python cli.py --audit
 ```
 
 To verify that generated rows are on the correct shards:
@@ -169,7 +171,7 @@ shows zero misplaced orders and customers on all eight shards.
 - [x] Add a supported-query parser that separates SQL structure from user-provided values
 - [x] Parameterize extracted values with SQLite placeholders before shard execution
 - [x] **E4:** 10 injection payloads × {vulnerable, safe} results table
-- [ ] Add CLI support for auditors to read the audit log
+- [x] Add CLI support for auditors to read the audit log
 
 ### Phase 4 - Week 4: evaluation & wrap
 - [x] **E1:** Bloom FP-rate curve vs. theory + routing precision

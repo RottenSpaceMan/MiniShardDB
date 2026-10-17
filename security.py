@@ -122,3 +122,30 @@ class AuthGate:
                 INSERT INTO audit (user, role, sql, allowed, shards)
                 VALUES (?, ?, ?, ?, ?)
             """, (user.name, user.role, sql, allowed, shards_touched))
+
+    def read_audit(self, user: User) -> list[tuple[object, ...]]:
+        """Return audit records for administrators and auditors."""
+        if user.role not in {"admin", "auditor"}:
+            raise PermissionError("Only administrators and auditors may read the audit log")
+
+        audit_path = Path(config.AUDIT_DB)
+        if not audit_path.exists():
+            return []
+
+        with sqlite3.connect(audit_path) as conn:
+            table = conn.execute(
+                """
+                SELECT 1
+                FROM sqlite_master
+                WHERE type = 'table' AND name = 'audit'
+                """
+            ).fetchone()
+            if table is None:
+                return []
+            return conn.execute(
+                """
+                SELECT ts, user, role, sql, allowed, shards
+                FROM audit
+                ORDER BY rowid
+                """
+            ).fetchall()

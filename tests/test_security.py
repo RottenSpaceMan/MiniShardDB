@@ -110,3 +110,22 @@ def test_injection_payload_is_denied_and_audited(auth_gate):
         ).fetchone()
 
     assert result == ("bob", "analyst", sql, 0, 0)
+
+
+def test_admin_and_auditor_can_read_audit_log(auth_gate):
+    auth_gate.audit(User("bob", "analyst"), "SELECT * FROM orders", True, 8)
+
+    rows = auth_gate.read_audit(User("amal", "admin"))
+
+    assert len(rows) == 1
+    assert rows[0][1:] == ("bob", "analyst", "SELECT * FROM orders", 1, 8)
+    assert auth_gate.read_audit(User("carol", "auditor")) == rows
+
+
+def test_analyst_cannot_read_audit_log(auth_gate):
+    with pytest.raises(PermissionError, match="Only administrators"):
+        auth_gate.read_audit(User("bob", "analyst"))
+
+
+def test_reading_missing_audit_log_returns_empty(auth_gate):
+    assert auth_gate.read_audit(User("carol", "auditor")) == []
