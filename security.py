@@ -1,6 +1,9 @@
 import sqlite3
+import re
 from pathlib import Path
-import config, parser
+
+import config
+import parser
 
 class User:
     def __init__(self, name: str, role: str) -> None:
@@ -62,13 +65,27 @@ class AuthGate:
 
     def allow(self, user: User, sql: str) -> bool:
         """Check if the given user is allowed to execute the given SQL query based on their role and the permissions defined in the meta database."""
-        words = sql.strip().split()
-        if not words:
+        if not parser.is_single_statement(sql):
             return False
-        op = words[0].upper()
         table = parser.parse_table(sql)
         if table is None:
             return False
+        op = sql.strip().split(maxsplit=1)[0].upper()
+        if op not in {"SELECT", "INSERT", "UPDATE", "DELETE"}:
+            return False
+
+        if op == "SELECT":
+            try:
+                parser.parse_supported_query(sql)
+            except ValueError:
+                # Preserve the RBAC API's wildcard-table behavior for simple
+                # reads while the CLI only executes parse_supported_query().
+                if not re.match(
+                    r"^SELECT\s+[A-Za-z0-9_.*,\s()]+\s+FROM\s+[A-Za-z_][A-Za-z0-9_]*\s*$",
+                    " ".join(sql.strip().split()),
+                    re.IGNORECASE,
+                ):
+                    return False
 
         conn = sqlite3.connect(self.meta_path)
         try:
@@ -89,11 +106,10 @@ class AuthGate:
         shards_touched: int,
     ) -> None:
         """Audit the execution of a SQL query by inserting a record into the audit database."""
-        if not Path(config.AUDIT_DB).exists():
-            conn = sqlite3.connect(config.AUDIT_DB)
-            cursor = conn.cursor()
-            cursor.execute("""
-                CREATE TABLE audit (
+        Path(config.AUDIT_DB).parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(config.AUDIT_DB) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS audit (
                     ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     user TEXT,
                     role TEXT,
@@ -102,12 +118,7 @@ class AuthGate:
                     shards INTEGER
                 )
             """)
-            conn.commit()
-            conn.close()
-        conn = sqlite3.connect(config.AUDIT_DB)
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO audit (user, role, sql, allowed, shards) VALUES (?, ?, ?, ?, ?)
-        """, (user.name, user.role, sql, allowed, shards_touched))
-        conn.commit()
-        conn.close()
+            conn.execute("""
+                INSERT INTO audit (user, role, sql, allowed, shards)
+                VALUES (?, ?, ?, ?, ?)
+            """, (user.name, user.role, sql, allowed, shards_touched))

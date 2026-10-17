@@ -1,4 +1,6 @@
-from parser import parse_table
+import pytest
+
+from parser import parse_supported_query, parse_table
 
 
 def test_parse_table_from_clause():
@@ -19,3 +21,24 @@ def test_parse_table_supports_other_statement_forms():
 
 def test_parse_table_returns_none_without_a_table():
     assert parse_table("SELECT 1") is None
+
+def test_parse_supported_query_parameterizes_order_id():
+    parsed = parse_supported_query("SELECT * FROM orders WHERE order_id = 123")
+
+    assert parsed.params == (123,)
+    assert parsed.sql == "SELECT * FROM orders WHERE order_id = ?"
+    assert parsed.where == ("order_id", 123)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT * FROM orders; DROP TABLE orders;",
+        "SELECT * FROM orders WHERE order_id = 1 OR 1=1",
+        "SELECT * FROM orders WHERE order_id = '1' OR '1'='1'",
+        "DROP TABLE orders",
+    ],
+)
+def test_parse_supported_query_rejects_injection(sql):
+    with pytest.raises(ValueError):
+        parse_supported_query(sql)

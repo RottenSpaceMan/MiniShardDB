@@ -24,13 +24,17 @@ execution vertical slice in place:
   authorization layer, and parser tests cover the supported statement forms.
 - `security.py` implements login, role-based permission checks, and an audit
   API that persists records in `data/audit.db`; these behaviors are covered by
-  security tests. The CLI does not call the audit API yet.
-- `cli.py` now prompts for a username, checks the query against the user's role,
-  and runs permitted queries. Password validation and CLI audit-log viewing are
-  not implemented yet.
+  security tests.
+- Supported CLI `SELECT` queries are validated as single statements and numeric
+  predicates are passed to SQLite as parameters. Injection payloads are rejected
+  before shard execution.
+- `cli.py` prompts for a username, checks the query against the user's role,
+  audits permitted and denied queries, and runs permitted queries. Password
+  validation and CLI audit-log viewing are not implemented yet.
 - Centralized SQLite was faster for cold execution because MiniShardDB incurred process-pool and multi-connection startup overhead. After pool reuse, MiniShardDB benefited from concurrent shard scans and outperformed the centralized baseline. Larger datasets are expected to reduce the relative impact of startup overhead, but ultimate scaling will depend on whether the workload is CPU-bound or limited by shared storage bandwidth.
-The benchmark results, report figures, and performance targets below are
-planned deliverables; they have not yet been measured in this repository.
+Bloom-filter, routing, parallelism, and injection evidence is checked into
+`report/evidence/`. The report, demo video, and final performance-target
+interpretation still need to be assembled from those measurements.
 
 ## Problem being addressed
 
@@ -48,7 +52,7 @@ A working, demoable system **plus quantitative proof** that the advanced (distri
 | Parallel aggregate speedup | 4–6× at 8 workers (measured at 1/2/4/8) |
 | Bloom false-positive rate | ≤ 1% |
 | Routing precision (100-query suite) | ≥ 99% |
-| SQL injection payloads blocked | 10/10 (0/10 in vulnerable mode) |
+| SQL injection payloads blocked | 10/10 in safe mode |
 
 **Final deliverables:** GitHub repo (this), 8–12 page report, 3–4 min demo video, experiment figures, `decisions.md` design log.
 
@@ -82,7 +86,7 @@ databases are derived copies.
 | M1 | Selection cost, cost-based shard choice | `coordinator.route`, E3 |
 | M2 | RBAC, SQL-injection defense | `security.py`, parameterized executor |
 | M3 | Partitioning, parallel query processing | `shard.py`, `executor.py` |
-| M4 | Horizontal fragmentation, transparency, Bloom filters, distributed query processing, (stretch: 2PC) | `coordinator.py`, `bloom.py` |
+| M4 | Horizontal fragmentation, transparency, Bloom filters, distributed query processing | `coordinator.py`, `bloom.py` |
 
 ## Stack
 
@@ -161,16 +165,15 @@ shows zero misplaced orders and customers on all eight shards.
 - [x] **E2:** run the final 1/2/4/8-worker benchmark and generate the speedup plot
 - [x] **E3:** benchmark MiniShardDB against the single centralized SQLite file and generate the comparison figure
 
-### Phase 3 - Week 3: security + stretch
-- [ ] Add a supported-query parser that separates SQL structure from user-provided values
-- [ ] Parameterize extracted values with SQLite placeholders before shard execution
-- [ ] **E4:** 10 injection payloads × {vulnerable, safe} results table
+### Phase 3 - Week 3: security
+- [x] Add a supported-query parser that separates SQL structure from user-provided values
+- [x] Parameterize extracted values with SQLite placeholders before shard execution
+- [x] **E4:** 10 injection payloads × {vulnerable, safe} results table
 - [ ] Add CLI support for auditors to read the audit log
-- [ ] STRETCH (only if on schedule): 2PC with `--kill-participant` demo
 
 ### Phase 4 - Week 4: evaluation & wrap
-- [ ] **E1:** Bloom FP-rate curve vs. theory + routing precision
-- [ ] Re-run all experiments on final data → `report/figures/`
+- [x] **E1:** Bloom FP-rate curve vs. theory + routing precision
+- [x] Re-run all experiments on final data → `report/figures/`
 - [ ] Report (8–12 pages) + polish this README
 - [ ] Demo video (3–4 min, scripted)
-- [ ] Viva prep: why Bloom with a partition map? shard failure mid-query/mid-commit? 2PC blocking?
+- [ ] Viva prep: why Bloom with a partition map? shard failure during a query?

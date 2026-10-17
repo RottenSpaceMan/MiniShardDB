@@ -82,3 +82,31 @@ def test_audit_persists_allowed_and_denied_decisions(auth_gate, tmp_path):
         ("bob", "analyst", allowed_sql, 1, 1),
         ("bob", "analyst", denied_sql, 0, 0),
     ]
+
+def test_safe_select_is_allowed(auth_gate):
+    user = User("bob", "analyst")
+    sql = "SELECT * FROM orders"
+
+    assert auth_gate.allow(user, sql) is True
+    auth_gate.audit(user, sql, True, 8)
+
+    with sqlite3.connect(str(config.AUDIT_DB)) as conn:
+        result = conn.execute(
+            "SELECT user, role, sql, allowed, shards FROM audit"
+        ).fetchone()
+
+    assert result == ("bob", "analyst", sql, 1, 8)
+
+def test_injection_payload_is_denied_and_audited(auth_gate):
+    user = User("bob", "analyst")
+    sql = "SELECT * FROM orders; DROP TABLE orders;"
+
+    assert auth_gate.allow(user, sql) is False
+    auth_gate.audit(user, sql, False, 0)
+
+    with sqlite3.connect(str(config.AUDIT_DB)) as conn:
+        result = conn.execute(
+            "SELECT user, role, sql, allowed, shards FROM audit"
+        ).fetchone()
+
+    assert result == ("bob", "analyst", sql, 0, 0)
