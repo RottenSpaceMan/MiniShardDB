@@ -1,58 +1,53 @@
 import sqlite3
 import re
+from contextlib import closing
 from pathlib import Path
 
 import config
 import parser
-
-class User:
-    def __init__(self, name: str, role: str) -> None:
-        """Instance of a logged-in user with a name and role"""
-        self.name, self.role = name, role
+from models import AuditRow, PathLike, User
 
 class AuthGate:
-    def __init__(self, meta_path: str) -> None:
+    def __init__(self, meta_path: PathLike) -> None:
         """Instance of an authorization gate, which uses a meta database to look up users and permissions, current implementation generates the meta database if it doesn't exist"""
         self.meta_path = meta_path
         if not Path(meta_path).exists():
-            conn = sqlite3.connect(meta_path)
-            cursor = conn.cursor()
-            cursor.execute("""
-                CREATE TABLE users (
-                    name TEXT,
-                    role TEXT
-                )
-            """)
-            cursor.execute("""
-                CREATE TABLE role_perms (
-                    role TEXT,
-                    op TEXT,
-                    table_name TEXT
-                )
-            """)
-            # Set up initial users and permissions
-            cursor.executemany("INSERT INTO users VALUES (?, ?)", [
-                ("amal", "admin"),
-                ("bob", "analyst"),
-                ("carol", "auditor"),
-            ])
-            cursor.executemany("INSERT INTO role_perms VALUES (?, ?, ?)", [
-                ("admin", "*", "*"),
-                ("analyst", "SELECT", "orders"),
-                ("analyst", "SELECT", "customers"),
-                ("auditor", "SELECT", "*"),
-            ])
-            conn.commit()
-            conn.close()
+            Path(meta_path).parent.mkdir(parents=True, exist_ok=True)
+            with closing(sqlite3.connect(meta_path)) as conn, conn:
+                conn.execute("""
+                    CREATE TABLE users (
+                        name TEXT PRIMARY KEY,
+                        role TEXT NOT NULL
+                    )
+                """)
+                conn.execute("""
+                    CREATE TABLE role_perms (
+                        role TEXT NOT NULL,
+                        op TEXT NOT NULL,
+                        table_name TEXT NOT NULL,
+                        PRIMARY KEY (role, op, table_name)
+                    )
+                """)
+                conn.executemany("INSERT INTO users VALUES (?, ?)", [
+                    ("amal", "admin"),
+                    ("bob", "analyst"),
+                    ("carol", "auditor"),
+                ])
+                conn.executemany("INSERT INTO role_perms VALUES (?, ?, ?)", [
+                    ("admin", "*", "*"),
+                    ("analyst", "SELECT", "orders"),
+                    ("analyst", "SELECT", "customers"),
+                    ("auditor", "SELECT", "*"),
+                ])
 
     def login(self) -> User:
-        """Prompt for username and password, check against the meta database, and return a User instance if successful. For simplicity, this implementation only checks the username and ignores the password."""
+        """Select a demo user by name; this is not password authentication."""
         while True:
             input_name = input("Username: ")
-            conn = sqlite3.connect(self.meta_path)
-            cursor = conn.cursor()
-            cursor.execute("SELECT role FROM users WHERE name = ?", (input_name,))
-            result = cursor.fetchone()
+            with closing(sqlite3.connect(self.meta_path)) as conn:
+                result = conn.execute(
+                    "SELECT role FROM users WHERE name = ?", (input_name,)
+                ).fetchone()
             if result is None:
                 print("Unknown username, try again?[y/n]: ")
                 choice = input().lower()
@@ -60,7 +55,6 @@ class AuthGate:
                     raise ValueError("Login failed")
             else:
                 role = result[0]
-                conn.close()
                 return User(input_name, role)
 
     def allow(self, user: User, sql: str) -> bool:
@@ -107,7 +101,7 @@ class AuthGate:
     ) -> None:
         """Audit the execution of a SQL query by inserting a record into the audit database."""
         Path(config.AUDIT_DB).parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(config.AUDIT_DB) as conn:
+        with closing(sqlite3.connect(config.AUDIT_DB)) as conn, conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS audit (
                     ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -123,7 +117,7 @@ class AuthGate:
                 VALUES (?, ?, ?, ?, ?)
             """, (user.name, user.role, sql, allowed, shards_touched))
 
-    def read_audit(self, user: User) -> list[tuple[object, ...]]:
+    def read_audit(self, user: User) -> list[AuditRow]:
         """Return audit records for administrators and auditors."""
         if user.role not in {"admin", "auditor"}:
             raise PermissionError("Only administrators and auditors may read the audit log")
@@ -132,7 +126,7 @@ class AuthGate:
         if not audit_path.exists():
             return []
 
-        with sqlite3.connect(audit_path) as conn:
+        with closing(sqlite3.connect(audit_path)) as conn:
             table = conn.execute(
                 """
                 SELECT 1

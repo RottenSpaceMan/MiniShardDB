@@ -1,8 +1,10 @@
 import argparse
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
+from contextlib import ExitStack, closing
 import os
 import random
+from pathlib import Path
 import sqlite3
 from collections.abc import Sequence
 import time
@@ -11,9 +13,21 @@ from faker import Faker
 
 import config
 import shard
+from models import (
+    CustomerRecord,
+    CustomerSpec,
+    GeneratedData,
+    GenerationOptions,
+    OrderRecord,
+    SqlRow,
+)
 
 
-def parse_args() -> argparse.Namespace:
+PROJECT_ROOT = Path(__file__).resolve().parent
+BASE_DB = PROJECT_ROOT / config.BASE_DB
+
+
+def parse_args() -> GenerationOptions:
     parser = argparse.ArgumentParser(description="Generate Customer and Order data.")
     parser.add_argument("--num-orders", type=int, default=1000, help="Number of orders to generate.")
     parser.add_argument("--customer-max-orders", type=int, default=5, help="Maximum number of orders per customer.")
@@ -32,40 +46,55 @@ def parse_args() -> argparse.Namespace:
         parser.error("--batch-size must be greater than zero")
     if args.workers is not None and args.workers < 1:
         parser.error("--workers must be greater than zero")
-    return args
+    return GenerationOptions(
+        num_orders=args.num_orders,
+        customer_max_orders=args.customer_max_orders,
+        seed=args.seed,
+        rebuild_bloom=args.rebuild_bloom,
+        fresh=args.fresh,
+        batch_size=args.batch_size,
+        workers=args.workers,
+    )
 
 
 def generate_data_batch(
-    batch: tuple[int, list[tuple[int, int, int]]],
-) -> tuple[list[tuple[int, str, str]], list[tuple[int, int, float, str, str]]]:
+    batch: tuple[int, list[CustomerSpec]],
+) -> GeneratedData:
     """Generate one independent Faker batch in a worker process."""
     batch_seed, customer_specs = batch
     fake = Faker()
     fake.seed_instance(batch_seed)
     rng = random.Random(batch_seed)
-    customers = []
-    orders = []
+    customers: list[CustomerRecord] = []
+    orders: list[OrderRecord] = []
 
     for customer_id, first_order_id, order_count in customer_specs:
-        customers.append((customer_id, fake.name(), fake.email()))
+        customers.append(
+            CustomerRecord(customer_id, fake.name(), fake.email())
+        )
         for offset in range(order_count):
-            orders.append((
-                first_order_id + offset,
-                customer_id,
-                round(
-                    rng.uniform(config.ORDER_AMOUNT_MIN, config.ORDER_AMOUNT_MAX),
-                    2,
+            orders.append(
+                OrderRecord(
+                    order_id=first_order_id + offset,
+                    cust_id=customer_id,
+                    amount=round(
+                        rng.uniform(
+                            config.ORDER_AMOUNT_MIN,
+                            config.ORDER_AMOUNT_MAX,
+                        ),
+                        2,
+                    ),
+                    created_at=fake.date_time_this_year().isoformat(),
+                    status=rng.choice(config.ORDER_STATUSES),
                 ),
-                fake.date_time_this_year().isoformat(),
-                rng.choice(config.ORDER_STATUSES),
-            ))
+            )
 
-    return customers, orders
+    return GeneratedData(tuple(customers), tuple(orders))
 
 def insert_in_batches(
     connection: sqlite3.Connection,
     sql: str,
-    rows: Sequence[tuple[object, ...]],
+    rows: Sequence[SqlRow],
     batch_size: int,
 ) -> None:
     for start in range(0, len(rows), batch_size):
@@ -74,11 +103,11 @@ def insert_in_batches(
 
 
 def remove_existing_databases() -> None:
-    if os.path.exists(config.BASE_DB):
-        print(f"Deleting existing base database: {config.BASE_DB}")
-        os.remove(config.BASE_DB)
+    if BASE_DB.exists():
+        print(f"Deleting existing base database: {BASE_DB}")
+        BASE_DB.unlink()
     for i in range(config.NUM_SHARDS):
-        shard_path = config.shard_path(i)
+        shard_path = PROJECT_ROOT / config.shard_path(i)
         print(f"Deleting existing shard file: {shard_path}", end="")
         if os.path.exists(shard_path):
             os.remove(shard_path)
@@ -93,11 +122,17 @@ def main() -> None:
     args = parse_args()
     random.seed(args.seed)
 
-    os.makedirs(config.SHARD_DIR, exist_ok=True)
+    (PROJECT_ROOT / config.SHARD_DIR).mkdir(parents=True, exist_ok=True)
     if args.fresh:
         remove_existing_databases()
 
-    con = sqlite3.connect(config.BASE_DB)
+    with ExitStack() as resources:
+        generate_and_shard(args, resources)
+
+
+def generate_and_shard(args: GenerationOptions, resources: ExitStack) -> None:
+    """Generate and shard customer and order data."""
+    con = resources.enter_context(closing(sqlite3.connect(BASE_DB)))
     cur = con.cursor()
 
     print("Creating and initializing base tables...")
@@ -144,18 +179,18 @@ def main() -> None:
 
     workers = args.workers or min(config.DEFAULT_MAX_WORKERS, os.cpu_count() or 1)
     with ProcessPoolExecutor(max_workers=workers) as pool:
-        for customers, orders in pool.map(generate_data_batch, generation_batches):
+        for generated in pool.map(generate_data_batch, generation_batches):
             insert_in_batches(
                 con,
                 "INSERT INTO customers (cust_id, name, email) VALUES (?, ?, ?)",
-                customers,
+                [customer.as_row() for customer in generated.customers],
                 args.batch_size,
             )
             insert_in_batches(
                 con,
                 "INSERT INTO orders (order_id, cust_id, amount, created_at, status) "
                 "VALUES (?, ?, ?, ?, ?)",
-                orders,
+                [order.as_row() for order in generated.orders],
                 args.batch_size,
             )
     end_time = time.perf_counter()
@@ -166,11 +201,14 @@ def main() -> None:
     print("Base data generation complete. Sharding...")
 
     start_time = time.perf_counter()
-    shards = [
-        shard.Shard(str(config.shard_path(i)), rebuild_bloom=args.rebuild_bloom)
-        for i in range(config.NUM_SHARDS)
-    ]
-    for current_shard in shards:
+    shards = []
+    for i in range(config.NUM_SHARDS):
+        current_shard = shard.Shard(
+            str(PROJECT_ROOT / config.shard_path(i)),
+            rebuild_bloom=args.rebuild_bloom,
+        )
+        resources.callback(current_shard.close)
+        shards.append(current_shard)
         current_shard.create()
 
     customer_batches = defaultdict(list)
@@ -215,7 +253,7 @@ def main() -> None:
             f"{current_shard.cur.execute('SELECT COUNT(*) FROM customers').fetchone()[0]} "
             f"customers."
         )
-    con.close()
+
 
 
 if __name__ == "__main__":

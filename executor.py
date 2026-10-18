@@ -2,44 +2,42 @@
 
 import sqlite3
 from collections.abc import Sequence
-from typing import Protocol
 from concurrent.futures import ProcessPoolExecutor
+from contextlib import closing
+from pathlib import Path
 
-SqlRow = tuple[object, ...]
-ShardJob = tuple[str, str, Sequence[object]]
-
-
-class ShardTarget(Protocol):
-    """Protocol for objects exposing a shard database path."""
-
-    path: str
+from models import ShardJob, ShardTarget, SqlParams, SqlRow, SqlRows
 
 
 def make_jobs(
     targets: Sequence[ShardTarget],
     sql: str,
-    params: Sequence[object],
+    params: SqlParams,
 ) -> list[ShardJob]:
     """Build serializable jobs for shard worker processes."""
-    return [(target.path, sql, params) for target in targets]
+    return [
+        ShardJob(target.path, sql, tuple(params))
+        for target in targets
+    ]
 
 
 def run_on_shard(args: ShardJob) -> list[SqlRow]:
     """Execute one SQL job using a short-lived SQLite connection."""
-    db_path, sql, params = args
-
-    with sqlite3.connect(db_path) as con:
-        return con.execute(sql, params).fetchall()
+    database_uri = Path(args.database_path).resolve().as_uri() + "?mode=ro"
+    with closing(sqlite3.connect(database_uri, uri=True)) as con:
+        return con.execute(args.sql, args.params).fetchall()
 
 
 def parallel(
     targets: Sequence[ShardTarget],
     sql: str,
-    params: Sequence[object] = (),
+    params: SqlParams = (),
     workers: int | None = None,
-) -> list[list[SqlRow]]:
+) -> list[SqlRows]:
     """Run shard jobs with a newly created process pool."""
     jobs = make_jobs(targets, sql, params)
+    if not jobs:
+        return []
     with ProcessPoolExecutor(max_workers=workers) as executor:
         return list(executor.map(run_on_shard, jobs))
 
@@ -55,8 +53,8 @@ class PersistentPool:
         self,
         targets: Sequence[ShardTarget],
         sql: str,
-        params: Sequence[object] = (),
-    ) -> list[list[SqlRow]]:
+        params: SqlParams = (),
+    ) -> list[SqlRows]:
         """Run shard jobs on the persistent process pool."""
         jobs = make_jobs(targets, sql, params)
         return list(self._executor.map(run_on_shard, jobs))

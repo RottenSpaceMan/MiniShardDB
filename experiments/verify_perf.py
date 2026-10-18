@@ -2,6 +2,7 @@
 
 import argparse
 import csv
+from contextlib import ExitStack, closing
 import math
 import sqlite3
 import sys
@@ -17,6 +18,7 @@ import executor
 from coordinator import Coordinator
 from parser import has_group_by, parse_where
 from shard import Shard
+from models import SqlRows
 
 
 DEFAULT_WORKERS: list[int] = [1, 2, 4, 8]
@@ -62,17 +64,17 @@ def run_warm(
     query: str,
 ) -> tuple[float, object]:
     """Measure one query using an already-running worker pool."""
-    targets = coordinator.route(parse_where(query))
     start = time.perf_counter()
+    targets = coordinator.route(parse_where(query))
     results = pool.parallel(targets, query, ())
-    elapsed = time.perf_counter() - start
-    return elapsed, coordinator.merge(results, grouped=has_group_by(query))
+    result = coordinator.merge(results, grouped=has_group_by(query))
+    return time.perf_counter() - start, result
 
 
 def run_centralized(
     connection: sqlite3.Connection,
     query: str,
-) -> tuple[float, list[tuple[object, ...]]]:
+) -> tuple[float, SqlRows]:
     """Measure one query on a reused centralized SQLite connection."""
     start = time.perf_counter()
     result = connection.execute(query).fetchall()
@@ -82,10 +84,10 @@ def run_centralized(
 def run_centralized_cold(
     database_path: Path,
     query: str,
-) -> tuple[float, list[tuple[object, ...]]]:
+) -> tuple[float, SqlRows]:
     """Measure one query with a fresh centralized SQLite connection."""
-    def execute() -> list[tuple[object, ...]]:
-        with sqlite3.connect(database_path) as connection:
+    def execute() -> SqlRows:
+        with closing(sqlite3.connect(database_path)) as connection:
             return connection.execute(query).fetchall()
 
     start = time.perf_counter()
@@ -171,19 +173,23 @@ def main() -> None:
     if missing:
         parser.error("missing databases; run gen_data.py first: " + ", ".join(missing))
 
-    shards = [Shard(str(path)) for path in shard_paths]
-    coordinator = Coordinator(shards)
     rows: list[dict[str, object]] = []
-    expected_result: object | None = None
     grouped = has_group_by(args.override_sql)
 
-    try:
-        with sqlite3.connect(base_path) as central_connection:
+    with ExitStack() as resources:
+        shards = []
+        for path in shard_paths:
+            current_shard = Shard(str(path))
+            resources.callback(current_shard.close)
+            shards.append(current_shard)
+        coordinator = Coordinator(shards)
+        with closing(sqlite3.connect(base_path)) as central_connection:
+            _, expected_result = run_centralized(central_connection, args.override_sql)
             for worker_count in args.worker_series:
                 if args.mode in ("cold", "both"):
                     print(f"Cold-start MiniShardDB with {worker_count} workers...")
                     for _ in range(args.warmups):
-                        _, expected_result = run_cold(
+                        run_cold(
                             coordinator, args.override_sql, worker_count
                         )
                     for repetition in range(1, args.repetitions + 1):
@@ -191,8 +197,6 @@ def main() -> None:
                             coordinator, args.override_sql, worker_count
                         )
                         comparable = comparable_result(result, grouped)
-                        if expected_result is None:
-                            expected_result = comparable
                         if not results_match(comparable, expected_result, grouped):
                             raise RuntimeError("inconsistent MiniShardDB result")
                         append_rows(
@@ -205,7 +209,7 @@ def main() -> None:
                     print(f"Warm-pool MiniShardDB with {worker_count} workers...")
                     with executor.PersistentPool(worker_count) as pool:
                         for _ in range(args.warmups):
-                            _, expected_result = run_warm(
+                            run_warm(
                                 coordinator, pool, args.override_sql
                             )
                         for repetition in range(1, args.repetitions + 1):
@@ -213,8 +217,6 @@ def main() -> None:
                                 coordinator, pool, args.override_sql
                             )
                             comparable = comparable_result(result, grouped)
-                            if expected_result is None:
-                                expected_result = comparable
                             if not results_match(comparable, expected_result, grouped):
                                 raise RuntimeError("inconsistent MiniShardDB result")
                             append_rows(
@@ -246,9 +248,6 @@ def main() -> None:
                         raise RuntimeError("centralized result differs from MiniShardDB")
                     append_rows(rows, "centralized SQLite", "warm", 1, repetition, seconds)
                     print(f"  run {repetition}: {seconds:.6f} seconds")
-    finally:
-        for shard in shards:
-            shard.close()
 
     output_path = PROJECT_ROOT / "report" / "evidence" / "e2-e3-performance.csv"
     output_path.parent.mkdir(parents=True, exist_ok=True)

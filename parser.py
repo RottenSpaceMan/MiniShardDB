@@ -1,19 +1,10 @@
 import re
-from dataclasses import dataclass
-from typing import Any
+from re import Pattern
+
+from models import ParsedQuery, ParsedWhere
 
 
-@dataclass(frozen=True)
-class ParsedQuery:
-    """A validated read query and its separately bound values."""
-
-    sql: str
-    params: tuple[Any, ...]
-    table: str
-    where: tuple[str, Any] | None
-
-
-_SELECT_PATTERN = re.compile(
+_SELECT_PATTERN: Pattern[str] = re.compile(
     r"""
     SELECT\s+(?P<columns>[A-Za-z0-9_.*,\s()+-]+?)\s+
     FROM\s+(?P<table>orders|customers)
@@ -76,7 +67,7 @@ def parse_supported_query(sql: str) -> ParsedQuery:
     return ParsedQuery(parameterized, (where[1],), table, where)
 
 
-def parse_where(q: str) -> tuple[str, int] | None:
+def parse_where(q: str) -> ParsedWhere:
     """Extract the first supported numeric equality predicate."""
     match = re.search(r"\bWHERE\s+(cust_id|order_id)\s*=\s*(\d+)", q, re.I)
     return (
@@ -104,4 +95,6 @@ def parse_table(sql: str) -> str | None:
 def is_single_statement(sql: str) -> bool:
     """Reject statement chaining and SQL comments before authorization."""
     stripped = sql.strip()
-    return bool(stripped) and ";" not in stripped and "--" not in stripped
+    return bool(stripped) and not any(
+        token in stripped for token in (";", "--", "/*", "*/")
+    )

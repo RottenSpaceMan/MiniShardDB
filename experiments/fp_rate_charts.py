@@ -1,6 +1,7 @@
 """Measure Bloom false positives and routing precision, then plot E1 results."""
 
 import csv
+from contextlib import ExitStack, closing
 import math
 import sqlite3
 import sys
@@ -62,7 +63,7 @@ def measure_false_positives(
     if probes < 1:
         raise ValueError("probes must be positive")
 
-    with sqlite3.connect(BASE_DB) as connection:
+    with closing(sqlite3.connect(f"{BASE_DB.as_uri()}?mode=ro", uri=True)) as connection:
         maximum_order_id = connection.execute(
             "SELECT MAX(order_id) FROM orders"
         ).fetchone()[0]
@@ -83,7 +84,7 @@ def measure_false_positives(
                 shard.con.execute("SELECT COUNT(order_id) FROM orders").fetchone()[0]
             )
             expected_rate = theoretical_rate(
-                item_count, shard.bloom.m, shard.bloom.k
+                item_count, shard.bloom.bit_count, shard.bloom.hash_count
             )
             shard_false_positives = 0
             for probe_number in range(1, probes + 1):
@@ -133,11 +134,13 @@ def measure_routing_precision(
     if query_count < 1:
         raise ValueError("query_count must be positive")
 
-    shards = [
-        Shard(str(shard_path(shard_id))) for shard_id in range(NUM_SHARDS)
-    ]
-    try:
-        with sqlite3.connect(BASE_DB) as connection:
+    with ExitStack() as resources:
+        shards = []
+        for shard_id in range(NUM_SHARDS):
+            current_shard = Shard(str(shard_path(shard_id)))
+            resources.callback(current_shard.close)
+            shards.append(current_shard)
+        with closing(sqlite3.connect(f"{BASE_DB.as_uri()}?mode=ro", uri=True)) as connection:
             orders = connection.execute(
                 "SELECT order_id, cust_id FROM orders ORDER BY order_id LIMIT ?",
                 (query_count,),
@@ -148,7 +151,7 @@ def measure_routing_precision(
         coordinator = Coordinator(shards)
         rows: list[RoutingRow] = []
         for query_number, (order_id, cust_id) in enumerate(orders, start=1):
-            actual_shard = int(cust_id) % NUM_SHARDS
+            actual_shard = config.shard_of(int(cust_id))
             routed = coordinator.route(("order_id", int(order_id)))
             routed_ids = {
                 shard_id
@@ -168,9 +171,6 @@ def measure_routing_precision(
                 }
             )
         return rows
-    finally:
-        for shard in shards:
-            shard.close()
 
 
 def write_csv(path: Path, rows: list[dict[str, object]]) -> None:
@@ -212,7 +212,7 @@ def create_plot(rows: list[FalsePositiveRow]) -> Path:
         color="black",
         linestyle="--",
         linewidth=1.5,
-        label="Configured target (1%)",
+        label=f"Configured target ({TARGET_FALSE_POSITIVE_RATE:.2%})",
     )
     axis.set_title("E1: Bloom-filter cumulative false-positive rate")
     axis.set_xlabel("Verified absent-key probes per shard")
@@ -260,6 +260,7 @@ def create_plot(rows: list[FalsePositiveRow]) -> Path:
 
     figure.tight_layout()
 
+    FIGURES_DIR.mkdir(parents=True, exist_ok=True)
     output_path = FIGURES_DIR / "e1-bloom-fp-rate.png"
     figure.savefig(output_path, dpi=180)
     plt.close(figure)
@@ -294,7 +295,7 @@ def main() -> None:
     routing_recall = sum(row["actual_shard_found"] for row in routing_rows)
     unnecessary = sum(row["unnecessary_shards"] for row in routing_rows)
     routed_shards = sum(row["routed_shards"] for row in routing_rows)
-    routing_precision = len(routing_rows) / routed_shards
+    routing_precision = routing_recall / routed_shards if routed_shards else 0.0
     print(
         "Aggregate false-positive rate: "
         f"{aggregate['cumulative_false_positive_rate']:.2%}"

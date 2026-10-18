@@ -1,8 +1,6 @@
-import sqlite3
-from collections.abc import Sequence
-from pathlib import Path
 
-import pytest
+from collections.abc import Sequence
+from contextlib import ExitStack
 
 import config
 from coordinator import Coordinator
@@ -71,31 +69,19 @@ def test_unknown_filter_routes_to_all_shards():
     assert coord.route(("status", 1)) == shards
 
 
-@pytest.mark.skipif(
-    not Path(config.SHARD_DIR).exists(),
-    reason="generated data/shards directory is not available",
-)
-def test_select_star_results_are_flattened_from_data_shards():
-    paths = [
-        config.shard_path(i)
-        for i in range(config.NUM_SHARDS)
-    ]
-    expected_count = 0
-    for path in paths:
-        with sqlite3.connect(path) as con:
-            expected_count += con.execute(
-                "SELECT COUNT(*) FROM orders"
-            ).fetchone()[0]
-
-    shards = [Shard(str(path)) for path in paths]
-    try:
-        results = Coordinator(shards).run("SELECT * FROM orders", (), None)
-    finally:
-        for shard in shards:
-            shard.close()
+def test_select_star_results_are_flattened_from_data_shards(tmp_path):
+    with ExitStack() as resources:
+        shards = []
+        for index in range(config.NUM_SHARDS):
+            shard = resources.enter_context(Shard(str(tmp_path / f"shard{index}.db")))
+            shard.create()
+            shard.insert_customers([(index, "Customer", "customer@example.com")])
+            shard.insert_orders([(index, index, 10.0, "2026-01-01", "pending")])
+            shards.append(shard)
+        results = Coordinator(shards).run("SELECT * FROM orders", (), None, workers=2)
 
     assert isinstance(results, list)
-    assert len(results) == expected_count
+    assert len(results) == config.NUM_SHARDS
     assert all(len(row) == 5 for row in results)
 
 

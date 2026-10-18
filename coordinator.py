@@ -1,32 +1,23 @@
 from collections.abc import Sequence
-from typing import Protocol
 
 from config import shard_of
+from models import (
+    GroupedResults,
+    MergedResults,
+    ParsedWhere,
+    QueryResults,
+    ShardLike,
+    SqlParams,
+)
 from parser import has_group_by
 import executor
 
-ParsedWhere = tuple[str, int] | None
-SqlRow = tuple[object, ...]
-QueryResults = Sequence[Sequence[SqlRow]]
-MergedResults = list[SqlRow] | dict[object, int | float]
-
-
-class _ShardLike(Protocol):
-    path: str
-
-    def bloom_has(self, key: object) -> bool:
-        ...
-
-    def execute(self, sql: str, params: Sequence[object]) -> list[SqlRow]:
-        ...
-
-
 class Coordinator:
     """Holds a list of Shard objects and routes queries to the right shard(s) based on WHERE clause."""
-    def __init__(self, shards: Sequence[_ShardLike]) -> None:
+    def __init__(self, shards: Sequence[ShardLike]) -> None:
         self.shards = shards
 
-    def route(self, parsed: ParsedWhere) -> list[_ShardLike]:
+    def route(self, parsed: ParsedWhere) -> list[ShardLike]:
         """Given a parsed WHERE clause, return the list of Shard objects that should be queried."""
         if parsed is None:
             return list(self.shards)
@@ -41,7 +32,7 @@ class Coordinator:
     def run(
         self,
         sql: str,
-        params: Sequence[object],
+        params: SqlParams,
         parsed: ParsedWhere,
         workers: int | None = None
     ) -> MergedResults:
@@ -55,7 +46,7 @@ class Coordinator:
         """Flatten normal rows or sum values for grouped (key, value) rows."""
         if not grouped:
             return [row for shard_rows in results for row in shard_rows]
-        totals: dict[object, int | float] = {}
+        totals: GroupedResults = {}
         for shard_rows in results:
             for row in shard_rows:
                 if len(row) != 2:

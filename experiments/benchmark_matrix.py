@@ -9,10 +9,13 @@ import sqlite3
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
+from contextlib import ExitStack
 from pathlib import Path
+from typing import TypedDict
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.axes import Axes
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -20,6 +23,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 import executor
 import config
 from coordinator import Coordinator
+from models import OrderRow
 from shard import Shard
 
 
@@ -31,6 +35,15 @@ QUERY = "SELECT status, SUM(amount) FROM orders GROUP BY status"
 DATASET_ROOT = PROJECT_ROOT / "data" / "benchmark_matrix"
 EVIDENCE_ROOT = PROJECT_ROOT / "report" / "evidence"
 FIGURES_ROOT = PROJECT_ROOT / "report" / "figures"
+
+
+class MeasurementRecord(TypedDict):
+    rows: int
+    shards: int
+    workers: int
+    mode: str
+    repetition: int
+    seconds: str
 
 
 def log(message: str) -> None:
@@ -83,10 +96,10 @@ def dataset_path(rows: int, shard_count: int) -> Path:
 
 def order_batch(
     bounds: tuple[int, int, int],
-) -> list[tuple[int, int, float, str, str]]:
+) -> list[OrderRow]:
     """Generate one deterministic order batch in a worker process."""
     start, end, shard_count = bounds
-    orders = []
+    orders: list[OrderRow] = []
     for order_id in range(start, end):
         customer_id = ((order_id - 1) % (shard_count * 10_000)) + 1
         amount = float((order_id * 17) % 49_001 + 100) / 100
@@ -113,6 +126,13 @@ def build_dataset(
     root = dataset_path(rows, shard_count)
     marker = root / ".complete"
     if marker.exists():
+        missing = [
+            root / f"shard{index}.db"
+            for index in range(shard_count)
+            if not (root / f"shard{index}.db").is_file()
+        ]
+        if missing:
+            raise FileNotFoundError(f"completed dataset has missing shards: {missing}")
         log(f"DATASET reuse: {rows:,} rows / {shard_count} shards")
         return root
 
@@ -129,6 +149,7 @@ def build_dataset(
         for shard_index in range(shard_count):
             path = root / f"shard{shard_index}.db"
             connection = sqlite3.connect(path)
+            connections.append(connection)
             connection.execute(
                 """
                 CREATE TABLE orders (
@@ -140,16 +161,15 @@ def build_dataset(
                 )
                 """
             )
-            connections.append(connection)
 
         bounds = batch_bounds(rows, shard_count, batch_size)
         with ProcessPoolExecutor(max_workers=generation_workers) as pool:
             for batch_number, batch in enumerate(
                 pool.map(order_batch, bounds), start=1
             ):
-                grouped: dict[int, list[tuple[int, int, float, str, str]]] = {}
+                grouped: dict[int, list[OrderRow]] = {}
                 for order in batch:
-                    grouped.setdefault((order[1] - 1) % shard_count, []).append(order)
+                    grouped.setdefault(order[1] % shard_count, []).append(order)
                 for shard_index, shard_rows in grouped.items():
                     connections[shard_index].executemany(
                         "INSERT INTO orders VALUES (?, ?, ?, ?, ?)", shard_rows
@@ -172,26 +192,31 @@ def build_dataset(
 def run_query(root: Path, worker_count: int) -> float:
     """Measure one grouped aggregation over all shards."""
     paths = sorted(root.glob("shard*.db"), key=lambda path: int(path.stem[5:]))
-    shards = [Shard(str(path)) for path in paths]
-    coordinator = Coordinator(shards)
-    try:
+    with ExitStack() as resources:
+        shards = []
+        for path in paths:
+            current_shard = Shard(str(path))
+            resources.callback(current_shard.close)
+            shards.append(current_shard)
+        coordinator = Coordinator(shards)
         start = time.perf_counter()
         result = coordinator.run(QUERY, (), None, workers=worker_count)
         elapsed = time.perf_counter() - start
         if not result:
             raise RuntimeError("benchmark query returned no result")
         return elapsed
-    finally:
-        for shard in shards:
-            shard.close()
 
 
 def run_warm_repetitions(root: Path, worker_count: int, repetitions: int) -> list[float]:
     paths = sorted(root.glob("shard*.db"), key=lambda path: int(path.stem[5:]))
-    shards = [Shard(str(path)) for path in paths]
-    coordinator = Coordinator(shards)
     timings = []
-    try:
+    with ExitStack() as resources:
+        shards = []
+        for path in paths:
+            current_shard = Shard(str(path))
+            resources.callback(current_shard.close)
+            shards.append(current_shard)
+        coordinator = Coordinator(shards)
         with executor.PersistentPool(worker_count) as pool:
             pool.parallel(shards, QUERY, ())
             for _ in range(repetitions):
@@ -201,9 +226,6 @@ def run_warm_repetitions(root: Path, worker_count: int, repetitions: int) -> lis
                 timings.append(time.perf_counter() - start)
                 log(f"BENCH warm repetition {len(timings)}/{repetitions} "
                     f"({timings[-1]:.4f}s)")
-    finally:
-        for shard in shards:
-            shard.close()
     return timings
 
 
@@ -217,11 +239,11 @@ def run_cold_repetitions(root: Path, worker_count: int, repetitions: int) -> lis
     return timings
 
 
-def write_csv(rows: list[dict[str, object]]) -> Path:
+def write_csv(rows: list[MeasurementRecord]) -> Path:
     EVIDENCE_ROOT.mkdir(parents=True, exist_ok=True)
     output = EVIDENCE_ROOT / "scaling-matrix.csv"
     with output.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(
+        writer: csv.DictWriter[str] = csv.DictWriter(
             handle,
             fieldnames=("rows", "shards", "workers", "mode", "repetition", "seconds"),
         )
@@ -231,7 +253,7 @@ def write_csv(rows: list[dict[str, object]]) -> Path:
 
 
 def make_chart(
-    rows: list[dict[str, object]],
+    rows: list[MeasurementRecord],
     mode: str,
     output_name: str,
     row_series: tuple[int, ...],
@@ -248,7 +270,7 @@ def make_chart(
     colors_by_rank = ("#b388ff", "#9e9e9e", "#757575", "#424242")
     all_normalized_values: list[float] = []
     subplot_data: list[
-        tuple[object, list[float], list[float], list[float], list[list[float]]]
+        tuple[Axes, list[float], list[float], list[float], list[list[float]]]
     ] = []
     rejected_total = 0
     for row_index, row_count in enumerate(row_series):
@@ -348,7 +370,7 @@ def make_chart(
     figure.text(
         0.5,
         0.01,
-        "1.0 = 1-worker reference; bars: median; whiskers: inlier range; "
+        f"1.0 = {worker_series[0]}-worker reference; bars: median; whiskers: inlier range; "
         "points: retained repetitions; outliers rejected by 1.5xIQR",
         ha="center",
     )
@@ -392,7 +414,7 @@ def main() -> None:
     if args.repetitions < 1 or args.batch_size < 1 or args.generation_workers < 1:
         parser.error("repetitions, batch-size, and generation-workers must be positive")
 
-    all_rows: list[dict[str, object]] = []
+    all_rows: list[MeasurementRecord] = []
     total_configurations = len(args.rows) * len(args.shards) * len(args.workers) * 2
     configuration_number = 0
     log(f"RUN start: {total_configurations} configurations, "

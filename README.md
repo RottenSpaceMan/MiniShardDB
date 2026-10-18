@@ -31,6 +31,9 @@ The implemented system includes the following:
   audits permitted and denied queries, and runs permitted queries. It also
   supports `--audit` for administrators and auditors. Password validation is
   not implemented yet.
+- `models.py` is the single source of truth for shared typed contracts:
+  `ParsedQuery`, `User`, generated customer/order records, serializable shard
+  jobs, and the named SQL row/result aliases used across the application.
 - Centralized SQLite was faster for cold execution because MiniShardDB incurred process-pool and multi-connection startup overhead. After pool reuse, MiniShardDB benefited from concurrent shard scans and outperformed the centralized baseline. Larger datasets are expected to reduce the relative impact of startup overhead, but ultimate scaling will depend on whether the workload is CPU-bound or limited by shared storage bandwidth.
 Bloom-filter, routing, parallelism, and injection evidence is checked into
 `report/evidence/`. The report, demo video, and final performance-target
@@ -125,7 +128,22 @@ python cli.py --audit
 ```
 
 The audit view is available to `amal` and `carol`; `bob` is denied. Login
-currently checks the username only and does not validate a password.
+currently checks the username only and does not validate a password. This is a
+local RBAC demonstration, not production authentication.
+
+Database paths resolve relative to the project directory, not the shell's
+working directory. Query workers open existing shard files read-only, and
+`Shard.execute()` accepts only `SELECT` statements. The CLI
+reuses saved Bloom filters rather than rebuilding them on each query; missing
+filters fall back to scanning. Inserting orders through `Shard.insert_orders`
+invalidates the affected filter, which can then be rebuilt with `build_bloom()`.
+Direct external database writes are not tracked: rebuild filters after those
+changes. Bloom files use pickle and must only come from trusted local generation.
+
+`.gitignore` excludes local databases, environment files, Python caches, and
+the entire `report/` directory. Already tracked report files remain tracked.
+Shareable `.env.example` files are
+allowed; never put real credentials in them.
 
 To verify that generated rows are on the correct shards:
 

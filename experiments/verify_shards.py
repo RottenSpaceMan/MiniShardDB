@@ -1,4 +1,5 @@
 import csv
+from contextlib import closing
 import sqlite3
 from pathlib import Path
 import sys
@@ -12,9 +13,9 @@ def verify_shards() -> list[dict[str, int]]:
     rows = []
 
     for shard_id in range(config.NUM_SHARDS):
-        path = config.shard_path(shard_id)
+        path = PROJECT_ROOT / config.shard_path(shard_id)
 
-        with sqlite3.connect(path) as connection:
+        with closing(sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)) as connection:
             order_rows = connection.execute(
                 "SELECT cust_id FROM orders"
             ).fetchall()
@@ -23,11 +24,11 @@ def verify_shards() -> list[dict[str, int]]:
             ).fetchall()
 
         wrong_orders = sum(
-            cust_id % config.NUM_SHARDS != shard_id
+            config.shard_of(cust_id) != shard_id
             for (cust_id,) in order_rows
         )
         wrong_customers = sum(
-            cust_id % config.NUM_SHARDS != shard_id
+            config.shard_of(cust_id) != shard_id
             for (cust_id,) in customer_rows
         )
 

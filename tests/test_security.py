@@ -129,3 +129,16 @@ def test_analyst_cannot_read_audit_log(auth_gate):
 
 def test_reading_missing_audit_log_returns_empty(auth_gate):
     assert auth_gate.read_audit(User("carol", "auditor")) == []
+
+
+def test_metadata_directory_is_created(tmp_path):
+    gate = AuthGate(tmp_path / "nested" / "meta.db")
+    assert gate.allow(User("bob", "analyst"), "SELECT * FROM orders")
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT /* comment */ * FROM orders",
+    "UPDATE customers SET name = 'changed' /* comment */",
+])
+def test_block_comments_are_rejected(auth_gate, sql):
+    assert not auth_gate.allow(User("amal", "admin"), sql)

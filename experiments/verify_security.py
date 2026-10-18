@@ -1,6 +1,7 @@
 """Compare raw SQLite execution with the supported-query security parser."""
 
 import csv
+from contextlib import closing
 import sqlite3
 import sys
 from pathlib import Path
@@ -27,9 +28,11 @@ PAYLOADS = [
 
 def vulnerable_result(payload: str) -> str:
     """Run a payload as a deliberately unsafe multi-statement script."""
-    with sqlite3.connect(":memory:") as connection:
+    with closing(sqlite3.connect(":memory:")) as connection:
         connection.execute("CREATE TABLE orders (order_id INTEGER)")
         connection.execute("INSERT INTO orders VALUES (1)")
+        connection.execute("CREATE TABLE customers (cust_id INTEGER)")
+        connection.execute("INSERT INTO customers VALUES (2)")
         try:
             connection.executescript(payload)
         except sqlite3.Error:

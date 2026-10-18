@@ -1,11 +1,14 @@
 from pathlib import Path
 
 
+PROJECT_ROOT: Path = Path(__file__).resolve().parent
+DATA_DIR: Path = PROJECT_ROOT / "data"
+
 NUM_SHARDS: int = 8
-SHARD_DIR: Path = Path("data/shards")
-META_DB: Path = Path("data/meta.db")
-BASE_DB: Path = Path("data/base.db")
-AUDIT_DB: Path = Path("data/audit.db")
+SHARD_DIR: Path = DATA_DIR / "shards"
+META_DB: Path = DATA_DIR / "meta.db"
+BASE_DB: Path = DATA_DIR / "base.db"
+AUDIT_DB: Path = DATA_DIR / "audit.db"
 
 SHARD_FILENAME_PREFIX: str = "shard"
 BLOOM_FILENAME_SUFFIX: str = ".bloom"

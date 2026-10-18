@@ -1,4 +1,5 @@
 import argparse
+from contextlib import ExitStack
 import sys
 import config
 from coordinator import Coordinator
@@ -31,7 +32,7 @@ def view_audit() -> None:
     gate: AuthGate = AuthGate(config.META_DB)
     user: User = gate.login()
     try:
-        rows = getattr(gate, "read_audit")(user)
+        rows = gate.read_audit(user)
     except PermissionError as error:
         sys.exit(f"DENIED: {error}")
 
@@ -57,14 +58,15 @@ def run_query(query: str) -> None:
         gate.audit(user, query, allowed=False, shards_touched=0)
         sys.exit("DENIED (see audit log)")
 
-    shards: list[Shard] = [
-        Shard(str(config.shard_path(i)))
-        for i in range(config.NUM_SHARDS)
-    ]
-    for s in shards:
-        s.build_bloom()
+    paths = [config.shard_path(i) for i in range(config.NUM_SHARDS)]
+    if any(not path.is_file() for path in paths):
+        sys.exit("Missing shard databases; run gen_data.py first.")
 
-    try:
+    with ExitStack() as resources:
+        shards = [
+            resources.enter_context(Shard(str(path)))
+            for path in paths
+        ]
         coord: Coordinator = Coordinator(shards)
         results = coord.run(parsed.sql, parsed.params, parsed.where)
         gate.audit(
@@ -73,11 +75,10 @@ def run_query(query: str) -> None:
             allowed=True,
             shards_touched=len(coord.route(parsed.where)),
         )
-        for row in results:
+        rows = results.items() if isinstance(results, dict) else results
+        for row in rows:
             print(row)
-    finally:
-        for shard in shards:
-            shard.close()
+
 
 if __name__ == "__main__":
     main()
