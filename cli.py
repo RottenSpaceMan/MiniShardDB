@@ -1,7 +1,5 @@
 import argparse
 import sys
-from pathlib import Path
-
 import config
 from coordinator import Coordinator
 from parser import parse_supported_query
@@ -60,7 +58,7 @@ def run_query(query: str) -> None:
         sys.exit("DENIED (see audit log)")
 
     shards: list[Shard] = [
-        Shard(str(Path(config.SHARD_DIR) / f"shard{i}.db"))
+        Shard(str(config.shard_path(i)))
         for i in range(config.NUM_SHARDS)
     ]
     for s in shards:

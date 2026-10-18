@@ -77,7 +77,7 @@ def test_unknown_filter_routes_to_all_shards():
 )
 def test_select_star_results_are_flattened_from_data_shards():
     paths = [
-        Path(config.SHARD_DIR) / f"shard{i}.db"
+        config.shard_path(i)
         for i in range(config.NUM_SHARDS)
     ]
     expected_count = 0

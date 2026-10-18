@@ -4,12 +4,11 @@
 
 ## What it is
 
-MiniShardDB horizontally fragments the `Orders` and `Customers` relations across 8 SQLite shards using hash partitioning on `cust_id`. The final benchmark target is 1M orders. A **coordinator** layer gives clients *fragmentation & location transparency*: they write ordinary SQL and never know the data is split. The current vertical slice routes point queries on `order_id` with per-shard Bloom filters, executes selected shards in parallel, merges grouped results, and applies an **RBAC gate** (admin / analyst / auditor) before execution.
+MiniShardDB horizontally fragments the `Orders` and `Customers` relations across 8 SQLite shards using hash partitioning on `cust_id`. The benchmark dataset scales to 1M orders. A **coordinator** layer gives clients *fragmentation and location transparency*: supported SQL queries do not expose shard locations. The current vertical slice routes point queries on `order_id` with per-shard Bloom filters, executes selected shards in parallel, merges grouped results, and applies an **RBAC gate** (admin / analyst / auditor) before execution.
 
 ## Current status
 
-The current working tree has the data-generation, query-routing, and parallel
-execution vertical slice in place:
+The implemented system includes the following:
 
 - Data generation creates a reproducible centralized `data/base.db`, loads
   eight shards, and builds per-shard Bloom filters.
@@ -20,8 +19,8 @@ execution vertical slice in place:
   tests are present and cover the implemented vertical slice.
 - `Coordinator.run` dispatches selected shard database paths through
   `executor.parallel` and merges the per-shard result lists.
-- `parser.parse_table` now extracts the first referenced table for the
-  authorization layer, and parser tests cover the supported statement forms.
+- `parser.py` validates the supported single-statement `SELECT` forms and
+  separates SQL structure from numeric parameter values.
 - `security.py` implements login, role-based permission checks, and an audit
   API that persists records in `data/audit.db`; these behaviors are covered by
   security tests.
@@ -125,6 +124,9 @@ python cli.py "SELECT * FROM orders WHERE order_id = 777"
 python cli.py --audit
 ```
 
+The audit view is available to `amal` and `carol`; `bob` is denied. Login
+currently checks the username only and does not validate a password.
+
 To verify that generated rows are on the correct shards:
 
 ```bash
@@ -133,6 +135,52 @@ python experiments/verify_shards.py
 
 This writes `report/evidence/shard-verification.csv`. The checked-in sample
 shows zero misplaced orders and customers on all eight shards.
+
+To regenerate the security evidence:
+
+```bash
+python experiments/verify_security.py
+```
+
+This writes `report/evidence/injection-results.csv`, comparing ten deliberately
+unsafe payloads with the supported-query parser. The safe parser blocks all ten.
+
+The performance and Bloom-filter evidence scripts are:
+
+```bash
+python experiments/verify_perf.py
+python experiments/fp_rate_charts.py
+```
+
+They write CSV evidence and figures under `report/evidence/` and
+`report/figures/`.
+
+To run the shard-count and dataset-size chart matrix:
+
+```bash
+python experiments/benchmark_matrix.py
+```
+
+The default matrix covers 100K, 1M, 5M, and 10M orders; 2, 4, 8, and 16
+shards; and 1, 2, 4, and 8 workers. It performs 10 repetitions for every
+configuration and writes raw measurements to
+`report/evidence/scaling-matrix.csv`. It generates
+`report/figures/scaling-matrix-cold.png` and
+`report/figures/scaling-matrix-warm.png`. Each subplot represents one
+row-count/shard-count pair; bars show the median and whiskers show the
+inlier range after Tukey 1.5×IQR outlier rejection; each retained observation
+is plotted as a point. Values are normalized within each subplot to the
+1-worker median (`1.0`), used as the base-db-equivalent reference. The y-axis
+scale is shared across the full matrix. Purple marks the fastest worker count,
+followed by progressively darker grey bars.
+
+The matrix uses a grouped aggregation, so Bloom filters are not involved in
+that measurement. Bloom-filter sizing is already calculated from the number of
+keys in each filter, so the 10M-row case does not require a special Bloom
+implementation.
+
+Matrix dataset creation is batched and uses a process pool for deterministic
+order generation; SQLite writes remain in the parent process.
 
 ---
 
@@ -144,7 +192,7 @@ shows zero misplaced orders and customers on all eight shards.
 - [x] Move `parse_where` out of `cli.py` -> `parser.py`
 - [x] Implement grouped-result merging in `Coordinator.merge`
 - [x] Fix `executor.parallel`: pass `s.path` (not Shard objects), return per-shard result lists
-- [x] `config.py`: `NUM_SHARDS`, `SHARD_DIR`, `shard_of(cust_id)` - single source of truth
+- [x] `config.py`: shard paths, Bloom settings, data-generation defaults, worker cap, and `shard_of(cust_id)` - single source of truth
 - [x] `decisions.md`: config-as-source-of-truth
 - [x] Add `.gitignore` (`.venv/`, `__pycache__/`, `data/`, `*.bloom`) + first push
 
@@ -176,6 +224,6 @@ shows zero misplaced orders and customers on all eight shards.
 ### Phase 4 - Week 4: evaluation & wrap
 - [x] **E1:** Bloom FP-rate curve vs. theory + routing precision
 - [x] Re-run all experiments on final data → `report/figures/`
-- [ ] Report (8–12 pages) + polish this README
+- [ ] Report (8–12 pages)
 - [ ] Demo video (3–4 min, scripted)
 - [ ] Viva prep: why Bloom with a partition map? shard failure during a query?

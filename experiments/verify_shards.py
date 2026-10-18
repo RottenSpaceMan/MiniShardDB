@@ -12,7 +12,7 @@ def verify_shards() -> list[dict[str, int]]:
     rows = []
 
     for shard_id in range(config.NUM_SHARDS):
-        path = Path(config.SHARD_DIR) / f"shard{shard_id}.db"
+        path = config.shard_path(shard_id)
 
         with sqlite3.connect(path) as connection:
             order_rows = connection.execute(

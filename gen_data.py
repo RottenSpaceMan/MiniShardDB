@@ -52,9 +52,12 @@ def generate_data_batch(
             orders.append((
                 first_order_id + offset,
                 customer_id,
-                round(rng.uniform(10.0, 500.0), 2),
+                round(
+                    rng.uniform(config.ORDER_AMOUNT_MIN, config.ORDER_AMOUNT_MAX),
+                    2,
+                ),
                 fake.date_time_this_year().isoformat(),
-                rng.choice(["pending", "shipped", "delivered", "canceled"]),
+                rng.choice(config.ORDER_STATUSES),
             ))
 
     return customers, orders
@@ -75,11 +78,11 @@ def remove_existing_databases() -> None:
         print(f"Deleting existing base database: {config.BASE_DB}")
         os.remove(config.BASE_DB)
     for i in range(config.NUM_SHARDS):
-        shard_path = f"{config.SHARD_DIR}/shard{i}.db"
+        shard_path = config.shard_path(i)
         print(f"Deleting existing shard file: {shard_path}", end="")
         if os.path.exists(shard_path):
             os.remove(shard_path)
-        bloom_path = f"{shard_path}.bloom"
+        bloom_path = config.bloom_path(shard_path)
         if os.path.exists(bloom_path):
             print(f" and its Bloom filter: {bloom_path}", end="")
             os.remove(bloom_path)
@@ -139,7 +142,7 @@ def main() -> None:
         for batch_start in range(0, len(customer_specs), generation_batch_size)
     ]
 
-    workers = args.workers or min(8, os.cpu_count() or 1)
+    workers = args.workers or min(config.DEFAULT_MAX_WORKERS, os.cpu_count() or 1)
     with ProcessPoolExecutor(max_workers=workers) as pool:
         for customers, orders in pool.map(generate_data_batch, generation_batches):
             insert_in_batches(
@@ -164,7 +167,7 @@ def main() -> None:
 
     start_time = time.perf_counter()
     shards = [
-        shard.Shard(f"{config.SHARD_DIR}/shard{i}.db", rebuild_bloom=args.rebuild_bloom)
+        shard.Shard(str(config.shard_path(i)), rebuild_bloom=args.rebuild_bloom)
         for i in range(config.NUM_SHARDS)
     ]
     for current_shard in shards:
@@ -201,7 +204,7 @@ def main() -> None:
 
     print("Sharding complete. Building Bloom filters...")
     for current_shard in shards:
-        if args.rebuild_bloom or not os.path.exists(f"{current_shard.path}.bloom"):
+        if args.rebuild_bloom or not config.bloom_path(current_shard.path).exists():
             current_shard.build_bloom()
     print("Bloom filters built. Data generation and sharding complete.")
     for current_shard in shards:

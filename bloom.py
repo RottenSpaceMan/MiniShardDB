@@ -1,7 +1,10 @@
 import hashlib, math
 
+import config
+
+
 class Bloom:
-    def __init__(self, n: int, p: float = 0.01) -> None:
+    def __init__(self, n: int, p: float = config.BLOOM_FALSE_POSITIVE_RATE) -> None:
         m = -n  * math.log(p) / (math.log(2) ** 2)
         self.m: int = int(m)
         self.k: int = max(1, round((m/n) * math.log(2)))

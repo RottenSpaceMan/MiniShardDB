@@ -4,15 +4,19 @@ import argparse
 import csv
 import sqlite3
 import statistics
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 
 PROJECT_ROOT: Path = Path(__file__).resolve().parents[1]
-BASE_DB: Path = PROJECT_ROOT / "data" / "base.db"
-SHARD_DIR: Path = PROJECT_ROOT / "data" / "shards"
-NUM_SHARDS: int = 8
+sys.path.insert(0, str(PROJECT_ROOT))
+
+import config
+
+BASE_DB: Path = PROJECT_ROOT / config.BASE_DB
+SHARD_DIR: Path = PROJECT_ROOT / config.SHARD_DIR
 DEFAULT_QUERY: str = "SELECT status, SUM(amount) FROM orders GROUP BY status"
 
 
@@ -58,7 +62,7 @@ def measure_memory_backed(
 
 def shard_paths() -> list[Path]:
     """Return the expected paths for all shard database files."""
-    return [SHARD_DIR / f"shard{index}.db" for index in range(NUM_SHARDS)]
+    return [PROJECT_ROOT / config.shard_path(index) for index in range(config.NUM_SHARDS)]
 
 
 def merge_grouped(
@@ -122,7 +126,7 @@ def measure_sharded_memory_backed(
     try:
         for _ in range(repetitions):
             start = time.perf_counter()
-            with ThreadPoolExecutor(max_workers=NUM_SHARDS) as pool:
+            with ThreadPoolExecutor(max_workers=config.NUM_SHARDS) as pool:
                 futures = [
                     pool.submit(connection.execute, query)
                     for connection in connections

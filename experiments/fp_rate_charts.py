@@ -16,15 +16,16 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from coordinator import Coordinator
 from shard import Shard
+import config
 
-BASE_DB: Path = PROJECT_ROOT / "data" / "base.db"
-SHARD_DIR: Path = PROJECT_ROOT / "data" / "shards"
+BASE_DB: Path = PROJECT_ROOT / config.BASE_DB
+SHARD_DIR: Path = PROJECT_ROOT / config.SHARD_DIR
 EVIDENCE_DIR: Path = PROJECT_ROOT / "report" / "evidence"
 FIGURES_DIR: Path = PROJECT_ROOT / "report" / "figures"
-NUM_SHARDS: int = 8
+NUM_SHARDS: int = config.NUM_SHARDS
 DEFAULT_PROBES: int = 1_000_000
 DEFAULT_ROUTING_QUERIES: int = 100
-TARGET_FALSE_POSITIVE_RATE: float = 0.01
+TARGET_FALSE_POSITIVE_RATE: float = config.BLOOM_FALSE_POSITIVE_RATE
 
 
 class FalsePositiveRow(TypedDict):
@@ -46,7 +47,7 @@ class RoutingRow(TypedDict):
 
 def shard_path(shard_id: int) -> Path:
     """Return the database path for one configured shard."""
-    return SHARD_DIR / f"shard{shard_id}.db"
+    return PROJECT_ROOT / config.shard_path(shard_id)
 
 
 def theoretical_rate(item_count: int, bit_count: int, hash_count: int) -> float:

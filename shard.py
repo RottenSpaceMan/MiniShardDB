@@ -1,18 +1,27 @@
+"""_summary_
+A class that represents a shard of a database, consisting of an SQLite file and its associated Bloom filter.
+Returns:
+    _type_: _description_
+"""
 import sqlite3
 from collections.abc import Sequence
+
 from bloom import Bloom
-import pickle, os
+import config
+import os
+import pickle
 
 class Shard:
-    """One SQLite file + its Bloom filter. All DB contact happens here."""
+    """One SQLite file + its Bloom filter"""
     def __init__(self, path: str, rebuild_bloom: bool = False) -> None:
         self.con: sqlite3.Connection = sqlite3.connect(path)
         self.cur: sqlite3.Cursor = self.con.cursor()
         self.path: str = path
         self.bloom: Bloom | None = None
         
-        if os.path.exists(f"{path}.bloom"):
-            with open(f"{path}.bloom", "rb") as f: self.bloom = pickle.load(f)
+        bloom_path = config.bloom_path(path)
+        if bloom_path.exists():
+            with bloom_path.open("rb") as f: self.bloom = pickle.load(f)
             if rebuild_bloom:
                 print(f"Rebuilding Bloom filter for {path}")
                 self.bloom = None  # Rebuild the Bloom filter
@@ -49,20 +58,24 @@ class Shard:
         self.con.executemany('INSERT INTO customers VALUES (?,?,?)', rows)
         self.con.commit()
 
-    def build_bloom(self, column: str = "order_id", p: float = 0.01) -> None:
+    def build_bloom(
+        self,
+        column: str = "order_id",
+        p: float = config.BLOOM_FALSE_POSITIVE_RATE,
+    ) -> None:
         """Generate a Bloom filter for the specified column in the orders table and save it to a file."""
         n = self.con.execute(f"SELECT COUNT({column}) FROM orders").fetchone()[0]
         if n == 0:
             self.bloom = None
-            bloom_path = f"{self.path}.bloom"
-            if os.path.exists(bloom_path):
-                os.remove(bloom_path)
+            bloom_path = config.bloom_path(self.path)
+            if bloom_path.exists():
+                bloom_path.unlink()
             return
         b = Bloom(n, p)
         for (v,) in self.con.execute(f"SELECT {column} FROM orders"):
             b.add(v)
         self.bloom = b
-        with open(f"{self.path}.bloom", "wb") as f: pickle.dump(b, f)
+        with config.bloom_path(self.path).open("wb") as f: pickle.dump(b, f)
 
     def execute(self, sql: str, params: Sequence[object]) -> list[tuple[object, ...]]:
         """Execute a SQL query with parameters and return the results."""

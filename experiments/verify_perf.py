@@ -164,7 +164,7 @@ def main() -> None:
 
     base_path = PROJECT_ROOT / config.BASE_DB
     shard_paths = [
-        PROJECT_ROOT / config.SHARD_DIR / f"shard{i}.db"
+        PROJECT_ROOT / config.shard_path(i)
         for i in range(config.NUM_SHARDS)
     ]
     missing = [str(path) for path in [base_path, *shard_paths] if not path.exists()]
