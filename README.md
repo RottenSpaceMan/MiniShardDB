@@ -173,10 +173,19 @@ python experiments/fp_rate_charts.py
 They write CSV evidence and figures under `report/evidence/` and
 `report/figures/`.
 
-To run the shard-count and dataset-size chart matrix:
+To regenerate the shard-count and dataset-size charts from the existing
+measurements:
 
 ```bash
 python experiments/benchmark_matrix.py
+```
+
+By default, this loads `report/evidence/scaling-matrix.csv` and only rebuilds
+the two PNG charts. Pass `--fresh` to delete that CSV, rerun all benchmark
+measurements, and rebuild both charts:
+
+```bash
+python experiments/benchmark_matrix.py --fresh
 ```
 
 The default matrix covers 100K, 1M, 5M, and 10M orders; 2, 4, 8, and 16
@@ -186,8 +195,11 @@ configuration and writes raw measurements to
 `report/figures/scaling-matrix-cold.png` and
 `report/figures/scaling-matrix-warm.png`. Each subplot represents one
 row-count/shard-count pair; bars show the median and whiskers show the
-inlier range after Tukey 1.5×IQR outlier rejection; each retained observation
-is plotted as a point. Values are normalized within each subplot to the
+inlier range after robust 3.5-MAD outlier rejection. Raw repetitions remain
+available in the CSV but are not plotted as points, preventing timing spikes
+from compressing the chart. Each subplot title reports the actual time
+represented by its `1.0×` baseline in milliseconds and seconds. Values are
+normalized within each subplot to the
 1-worker median (`1.0`), used as the base-db-equivalent reference. The y-axis
 scale is shared across the full matrix. Purple marks the fastest worker count,
 followed by progressively darker grey bars.

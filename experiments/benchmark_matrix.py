@@ -46,6 +46,26 @@ class MeasurementRecord(TypedDict):
     seconds: str
 
 
+def reject_outliers(values: list[float]) -> tuple[list[float], int]:
+    """Reject timing spikes with a robust median absolute deviation fence."""
+    if not values:
+        raise ValueError("cannot reject outliers from an empty sample")
+    median = float(np.median(values))
+    deviations = np.abs(np.asarray(values) - median)
+    mad = float(np.median(deviations))
+    if mad == 0:
+        inliers = [value for value in values if value == median]
+    else:
+        robust_scores = 0.6745 * deviations / mad
+        inliers = [
+            value for value, score in zip(values, robust_scores)
+            if score <= 3.5
+        ]
+    if not inliers:
+        raise RuntimeError("outlier rejection removed every observation")
+    return inliers, len(values) - len(inliers)
+
+
 def log(message: str) -> None:
     """Print a timestamped progress message immediately."""
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}", flush=True)
@@ -252,6 +272,63 @@ def write_csv(rows: list[MeasurementRecord]) -> Path:
     return output
 
 
+def read_csv(path: Path) -> list[MeasurementRecord]:
+    """Read previously collected measurements for chart-only runs."""
+    required_fields = {"rows", "shards", "workers", "mode", "repetition", "seconds"}
+    with path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        if reader.fieldnames is None or not required_fields.issubset(reader.fieldnames):
+            raise RuntimeError(
+                f"{path} is missing required benchmark columns: "
+                f"{', '.join(sorted(required_fields))}"
+            )
+        rows: list[MeasurementRecord] = []
+        for line_number, item in enumerate(reader, start=2):
+            try:
+                mode = item["mode"]
+                if mode not in {"cold", "warm"}:
+                    raise ValueError(f"unknown mode {mode!r}")
+                rows.append(
+                    {
+                        "rows": int(item["rows"]),
+                        "shards": int(item["shards"]),
+                        "workers": int(item["workers"]),
+                        "mode": mode,
+                        "repetition": int(item["repetition"]),
+                        "seconds": item["seconds"],
+                    }
+                )
+            except (KeyError, TypeError, ValueError) as error:
+                raise RuntimeError(
+                    f"invalid benchmark record in {path} at line {line_number}"
+                ) from error
+    if not rows:
+        raise RuntimeError(f"{path} contains no benchmark measurements")
+    return rows
+
+
+def generate_charts(
+    rows: list[MeasurementRecord],
+    row_series: tuple[int, ...],
+    shard_series: tuple[int, ...],
+    worker_series: tuple[int, ...],
+) -> None:
+    log("CHART start: generating cold and warm matrices")
+    make_chart(
+        rows, "cold", "scaling-matrix-cold.png",
+        row_series, shard_series, worker_series,
+    )
+    make_chart(
+        rows, "warm", "scaling-matrix-warm.png",
+        row_series, shard_series, worker_series,
+    )
+
+
+def format_duration(seconds: float) -> str:
+    """Format a timing with both millisecond and second units."""
+    return f"{seconds * 1_000:.2f} ms ({seconds:.5f} s)"
+
+
 def make_chart(
     rows: list[MeasurementRecord],
     mode: str,
@@ -270,8 +347,16 @@ def make_chart(
     colors_by_rank = ("#b388ff", "#9e9e9e", "#757575", "#424242")
     all_normalized_values: list[float] = []
     subplot_data: list[
-        tuple[Axes, list[float], list[float], list[float], list[list[float]]]
+        tuple[
+            Axes,
+            list[float],
+            list[float],
+            list[float],
+            list[list[float]],
+            float,
+        ]
     ] = []
+    baselines_by_axis: dict[Axes, float] = {}
     rejected_total = 0
     for row_index, row_count in enumerate(row_series):
         for column_index, shard_count in enumerate(shard_series):
@@ -293,21 +378,8 @@ def make_chart(
                         f"missing {mode} data for {row_count} rows, "
                         f"{shard_count} shards, {worker_count} workers"
                     )
-                quartile_1, quartile_3 = np.percentile(values, [25, 75])
-                iqr = quartile_3 - quartile_1
-                lower_bound = quartile_1 - 1.5 * iqr
-                upper_bound = quartile_3 + 1.5 * iqr
-                inliers = [
-                    value for value in values
-                    if lower_bound <= value <= upper_bound
-                ]
-                if not inliers:
-                    raise RuntimeError(
-                        f"outlier filter removed every observation for "
-                        f"{row_count} rows, {shard_count} shards, "
-                        f"{worker_count} workers"
-                    )
-                rejected_total += len(values) - len(inliers)
+                inliers, rejected = reject_outliers(values)
+                rejected_total += rejected
                 observations.append(inliers)
 
             baseline = float(np.median(observations[0]))
@@ -321,6 +393,7 @@ def make_chart(
             normalized_lows = [min(values) for values in normalized_observations]
             normalized_highs = [max(values) for values in normalized_observations]
             all_normalized_values.extend(normalized_highs)
+            baselines_by_axis[axis] = baseline
             subplot_data.append(
                 (
                     axis,
@@ -328,11 +401,12 @@ def make_chart(
                     normalized_lows,
                     normalized_highs,
                     normalized_observations,
+                    baseline,
                 )
             )
 
     y_max = max(all_normalized_values) * 1.12
-    for axis, medians, lows, highs, observations in subplot_data:
+    for axis, medians, lows, highs, observations, baseline in subplot_data:
         x = np.arange(len(worker_series))
         rank_order = sorted(range(len(medians)), key=medians.__getitem__)
         colors = [""] * len(medians)
@@ -346,17 +420,6 @@ def make_chart(
             capsize=3,
             error_kw={"elinewidth": 1, "ecolor": "#111111"},
         )
-        for index, values in enumerate(observations):
-            jitter = np.linspace(-0.12, 0.12, len(values))
-            axis.scatter(
-                np.full(len(values), x[index]) + jitter,
-                values,
-                color="#111111",
-                s=11,
-                alpha=0.7,
-                zorder=3,
-                linewidths=0,
-            )
         axis.set_xticks(x, [str(worker) for worker in worker_series])
         axis.set_ylim(0, y_max)
         axis.grid(axis="y", alpha=0.25)
@@ -371,7 +434,7 @@ def make_chart(
         0.5,
         0.01,
         f"1.0 = {worker_series[0]}-worker reference; bars: median; whiskers: inlier range; "
-        "points: retained repetitions; outliers rejected by 1.5xIQR",
+        "whiskers: robust 3.5-MAD inlier range; raw repetitions remain in CSV",
         ha="center",
     )
     figure.text(
@@ -384,7 +447,11 @@ def make_chart(
     for row_index, row_count in enumerate(row_series):
         for column_index, shard_count in enumerate(shard_series):
             axis = axes[row_index][column_index]
-            axis.set_title(f"{row_count:,} rows / {shard_count} shards", fontsize=9)
+            axis.set_title(
+                f"{row_count:,} rows / {shard_count} shards\n"
+                f"1.0× = {format_duration(baselines_by_axis[axis])}",
+                fontsize=9,
+            )
             if column_index == 0:
                 axis.set_ylabel("normalized execution time")
             if row_index == len(row_series) - 1:
@@ -403,6 +470,11 @@ def main() -> None:
     parser.add_argument("--shards", type=lambda value: parse_series(value, "shards"), default=DEFAULT_SHARDS)
     parser.add_argument("--workers", type=lambda value: parse_series(value, "workers"), default=DEFAULT_WORKERS)
     parser.add_argument("--repetitions", type=int, default=10)
+    parser.add_argument(
+        "--fresh",
+        action="store_true",
+        help="Delete the existing scaling CSV before running the benchmark",
+    )
     parser.add_argument("--batch-size", type=int, default=50_000)
     parser.add_argument(
         "--generation-workers",
@@ -413,6 +485,22 @@ def main() -> None:
     args = parser.parse_args()
     if args.repetitions < 1 or args.batch_size < 1 or args.generation_workers < 1:
         parser.error("repetitions, batch-size, and generation-workers must be positive")
+
+    output_csv = EVIDENCE_ROOT / "scaling-matrix.csv"
+    if not args.fresh:
+        if not output_csv.is_file():
+            parser.error(
+                f"{output_csv} does not exist; run with --fresh to collect measurements"
+            )
+        all_rows = read_csv(output_csv)
+        log(f"RUN reuse: loaded {len(all_rows)} measurements from {output_csv}")
+        generate_charts(all_rows, args.rows, args.shards, args.workers)
+        log("RUN complete: regenerated charts from existing CSV")
+        return
+
+    if output_csv.exists():
+        output_csv.unlink()
+        log(f"RUN fresh: deleted {output_csv}")
 
     all_rows: list[MeasurementRecord] = []
     total_configurations = len(args.rows) * len(args.shards) * len(args.workers) * 2
@@ -458,15 +546,7 @@ def main() -> None:
                     )
 
     output = write_csv(all_rows)
-    log("CHART start: generating cold and warm matrices")
-    make_chart(
-        all_rows, "cold", "scaling-matrix-cold.png",
-        args.rows, args.shards, args.workers,
-    )
-    make_chart(
-        all_rows, "warm", "scaling-matrix-warm.png",
-        args.rows, args.shards, args.workers,
-    )
+    generate_charts(all_rows, args.rows, args.shards, args.workers)
     log(f"RUN complete: wrote {output}")
 
 
