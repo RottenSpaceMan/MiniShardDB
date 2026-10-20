@@ -1,27 +1,27 @@
+"""Verify customer-based placement of orders and customers in every shard."""
+
 import csv
-from contextlib import closing
-import sqlite3
-from pathlib import Path
 import sys
+from contextlib import closing
+from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
+
 import config
+from database import connect_read_only
 
 
 def verify_shards() -> list[dict[str, int]]:
-    rows = []
+    """Return row counts and misplaced-row counts without modifying the shards."""
+    rows: list[dict[str, int]] = []
 
     for shard_id in range(config.NUM_SHARDS):
-        path = PROJECT_ROOT / config.shard_path(shard_id)
+        path = config.shard_path(shard_id)
 
-        with closing(sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)) as connection:
-            order_rows = connection.execute(
-                "SELECT cust_id FROM orders"
-            ).fetchall()
-            customer_rows = connection.execute(
-                "SELECT cust_id FROM customers"
-            ).fetchall()
+        with closing(connect_read_only(path)) as connection:
+            order_rows = connection.execute("SELECT cust_id FROM orders").fetchall()
+            customer_rows = connection.execute("SELECT cust_id FROM customers").fetchall()
 
         wrong_orders = sum(
             config.shard_of(cust_id) != shard_id
@@ -46,6 +46,7 @@ def verify_shards() -> list[dict[str, int]]:
 
 
 def main() -> None:
+    """Write shard-placement verification evidence."""
     fieldnames = [
         "shard",
         "orders",

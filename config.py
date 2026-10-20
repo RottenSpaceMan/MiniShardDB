@@ -1,3 +1,5 @@
+"""Project paths, shard placement, and shared defaults."""
+
 from pathlib import Path
 
 
@@ -32,7 +34,5 @@ def bloom_path(shard_database: str | Path) -> Path:
 
 
 def shard_of(cust_id: int) -> int:
-    """
-    Determine the shard for a given customer ID.
-    """
+    """Determine the shard for a given customer ID."""
     return cust_id % NUM_SHARDS

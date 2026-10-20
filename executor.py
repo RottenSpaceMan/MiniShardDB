@@ -1,12 +1,12 @@
 """Execute SQL work against shard database files."""
 
-import sqlite3
+
 from collections.abc import Sequence
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import closing
-from pathlib import Path
 
-from models import ShardJob, ShardTarget, SqlParams, SqlRow, SqlRows
+from database import connect_read_only
+from models import ShardJob, ShardTarget, SqlParams, SqlRows
 
 
 def make_jobs(
@@ -15,17 +15,14 @@ def make_jobs(
     params: SqlParams,
 ) -> list[ShardJob]:
     """Build serializable jobs for shard worker processes."""
-    return [
-        ShardJob(target.path, sql, tuple(params))
-        for target in targets
-    ]
+    bound_params = tuple(params)
+    return [ShardJob(target.path, sql, bound_params) for target in targets]
 
 
-def run_on_shard(args: ShardJob) -> list[SqlRow]:
+def run_on_shard(args: ShardJob) -> SqlRows:
     """Execute one SQL job using a short-lived SQLite connection."""
-    database_uri = Path(args.database_path).resolve().as_uri() + "?mode=ro"
-    with closing(sqlite3.connect(database_uri, uri=True)) as con:
-        return con.execute(args.sql, args.params).fetchall()
+    with closing(connect_read_only(args.database_path)) as connection:
+        return connection.execute(args.sql, args.params).fetchall()
 
 
 def parallel(

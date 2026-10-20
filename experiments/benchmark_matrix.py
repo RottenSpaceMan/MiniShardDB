@@ -20,8 +20,8 @@ from matplotlib.axes import Axes
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-import executor
 import config
+import executor
 from coordinator import Coordinator
 from models import OrderRow
 from shard import Shard
@@ -30,7 +30,6 @@ from shard import Shard
 DEFAULT_ROWS = (100_000, 1_000_000, 5_000_000, 10_000_000)
 DEFAULT_SHARDS = (2, 4, 8, 16)
 DEFAULT_WORKERS = (1, 2, 4, 8)
-STATUSES = config.ORDER_STATUSES
 QUERY = "SELECT status, SUM(amount) FROM orders GROUP BY status"
 DATASET_ROOT = PROJECT_ROOT / "data" / "benchmark_matrix"
 EVIDENCE_ROOT = PROJECT_ROOT / "report" / "evidence"
@@ -111,6 +110,7 @@ def parse_size_series(value: str) -> tuple[int, ...]:
 
 
 def dataset_path(rows: int, shard_count: int) -> Path:
+    """Return the isolated dataset directory for one scaling configuration."""
     return DATASET_ROOT / f"rows-{rows}" / f"shards-{shard_count}"
 
 
@@ -123,7 +123,7 @@ def order_batch(
     for order_id in range(start, end):
         customer_id = ((order_id - 1) % (shard_count * 10_000)) + 1
         amount = float((order_id * 17) % 49_001 + 100) / 100
-        status = STATUSES[order_id % len(STATUSES)]
+        status = config.ORDER_STATUSES[order_id % len(config.ORDER_STATUSES)]
         orders.append((order_id, customer_id, amount, "2026-01-01", status))
     return orders
 
@@ -209,15 +209,21 @@ def build_dataset(
     return root
 
 
+def _open_shards(root: Path, resources: ExitStack) -> list[Shard]:
+    """Open shards in numeric order and register their cleanup immediately."""
+    paths = sorted(root.glob("shard*.db"), key=lambda path: int(path.stem[5:]))
+    shards = []
+    for path in paths:
+        current_shard = Shard(str(path))
+        resources.callback(current_shard.close)
+        shards.append(current_shard)
+    return shards
+
+
 def run_query(root: Path, worker_count: int) -> float:
     """Measure one grouped aggregation over all shards."""
-    paths = sorted(root.glob("shard*.db"), key=lambda path: int(path.stem[5:]))
     with ExitStack() as resources:
-        shards = []
-        for path in paths:
-            current_shard = Shard(str(path))
-            resources.callback(current_shard.close)
-            shards.append(current_shard)
+        shards = _open_shards(root, resources)
         coordinator = Coordinator(shards)
         start = time.perf_counter()
         result = coordinator.run(QUERY, (), None, workers=worker_count)
@@ -228,14 +234,10 @@ def run_query(root: Path, worker_count: int) -> float:
 
 
 def run_warm_repetitions(root: Path, worker_count: int, repetitions: int) -> list[float]:
-    paths = sorted(root.glob("shard*.db"), key=lambda path: int(path.stem[5:]))
+    """Measure persistent-pool queries after one untimed warmup."""
     timings = []
     with ExitStack() as resources:
-        shards = []
-        for path in paths:
-            current_shard = Shard(str(path))
-            resources.callback(current_shard.close)
-            shards.append(current_shard)
+        shards = _open_shards(root, resources)
         coordinator = Coordinator(shards)
         with executor.PersistentPool(worker_count) as pool:
             pool.parallel(shards, QUERY, ())
@@ -337,7 +339,7 @@ def make_chart(
     shard_series: tuple[int, ...],
     worker_series: tuple[int, ...],
 ) -> Path:
-    """Make a normalized chart matrix with Tukey-filtered observations."""
+    """Make a normalized chart matrix with MAD-filtered observations."""
     figure, axes = plt.subplots(
         len(row_series),
         len(shard_series),
@@ -346,16 +348,7 @@ def make_chart(
     )
     colors_by_rank = ("#b388ff", "#9e9e9e", "#757575", "#424242")
     all_normalized_values: list[float] = []
-    subplot_data: list[
-        tuple[
-            Axes,
-            list[float],
-            list[float],
-            list[float],
-            list[list[float]],
-            float,
-        ]
-    ] = []
+    subplot_data: list[tuple[Axes, list[float], list[float], list[float]]] = []
     baselines_by_axis: dict[Axes, float] = {}
     rejected_total = 0
     for row_index, row_count in enumerate(row_series):
@@ -400,13 +393,11 @@ def make_chart(
                     normalized_medians,
                     normalized_lows,
                     normalized_highs,
-                    normalized_observations,
-                    baseline,
                 )
             )
 
     y_max = max(all_normalized_values) * 1.12
-    for axis, medians, lows, highs, observations, baseline in subplot_data:
+    for axis, medians, lows, highs in subplot_data:
         x = np.arange(len(worker_series))
         rank_order = sorted(range(len(medians)), key=medians.__getitem__)
         colors = [""] * len(medians)
@@ -467,8 +458,16 @@ def make_chart(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rows", type=parse_size_series, default=DEFAULT_ROWS)
-    parser.add_argument("--shards", type=lambda value: parse_series(value, "shards"), default=DEFAULT_SHARDS)
-    parser.add_argument("--workers", type=lambda value: parse_series(value, "workers"), default=DEFAULT_WORKERS)
+    parser.add_argument(
+        "--shards",
+        type=lambda value: parse_series(value, "shards"),
+        default=DEFAULT_SHARDS,
+    )
+    parser.add_argument(
+        "--workers",
+        type=lambda value: parse_series(value, "workers"),
+        default=DEFAULT_WORKERS,
+    )
     parser.add_argument("--repetitions", type=int, default=10)
     parser.add_argument(
         "--fresh",

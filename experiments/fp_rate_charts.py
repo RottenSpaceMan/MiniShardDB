@@ -1,26 +1,26 @@
 """Measure Bloom false positives and routing precision, then plot E1 results."""
 
 import csv
-from contextlib import ExitStack, closing
 import math
-import sqlite3
 import sys
+from collections.abc import Mapping, Sequence
+from contextlib import ExitStack, closing
 from pathlib import Path
 from typing import TypedDict
 
 import matplotlib.pyplot as plt
-from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 from matplotlib.ticker import FuncFormatter
+from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 
 PROJECT_ROOT: Path = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from coordinator import Coordinator
-from shard import Shard
 import config
+from coordinator import Coordinator
+from database import connect_read_only
+from shard import Shard
 
-BASE_DB: Path = PROJECT_ROOT / config.BASE_DB
-SHARD_DIR: Path = PROJECT_ROOT / config.SHARD_DIR
+BASE_DB: Path = config.BASE_DB
 EVIDENCE_DIR: Path = PROJECT_ROOT / "report" / "evidence"
 FIGURES_DIR: Path = PROJECT_ROOT / "report" / "figures"
 NUM_SHARDS: int = config.NUM_SHARDS
@@ -46,11 +46,6 @@ class RoutingRow(TypedDict):
     unnecessary_shards: int
 
 
-def shard_path(shard_id: int) -> Path:
-    """Return the database path for one configured shard."""
-    return PROJECT_ROOT / config.shard_path(shard_id)
-
-
 def theoretical_rate(item_count: int, bit_count: int, hash_count: int) -> float:
     """Return the expected Bloom false-positive probability."""
     return (1 - math.exp(-hash_count * item_count / bit_count)) ** hash_count
@@ -63,7 +58,7 @@ def measure_false_positives(
     if probes < 1:
         raise ValueError("probes must be positive")
 
-    with closing(sqlite3.connect(f"{BASE_DB.as_uri()}?mode=ro", uri=True)) as connection:
+    with closing(connect_read_only(BASE_DB)) as connection:
         maximum_order_id = connection.execute(
             "SELECT MAX(order_id) FROM orders"
         ).fetchone()[0]
@@ -71,12 +66,10 @@ def measure_false_positives(
         raise RuntimeError("base database contains no order IDs")
 
     rows: list[FalsePositiveRow] = []
-    aggregate_false_positives = 0
-    aggregate_probes = 0
     aggregate_by_probe: list[int] = [0] * probes
 
     for shard_id in range(NUM_SHARDS):
-        shard = Shard(str(shard_path(shard_id)))
+        shard = Shard(str(config.shard_path(shard_id)))
         try:
             if shard.bloom is None:
                 raise RuntimeError(f"shard {shard_id} has no Bloom filter")
@@ -91,8 +84,6 @@ def measure_false_positives(
                 candidate = maximum_order_id + probe_number
                 is_false_positive = int(shard.bloom_has(candidate))
                 shard_false_positives += is_false_positive
-                aggregate_false_positives += is_false_positive
-                aggregate_probes += 1
                 aggregate_by_probe[probe_number - 1] += is_false_positive
                 rows.append(
                     {
@@ -109,9 +100,7 @@ def measure_false_positives(
             shard.close()
 
     running_false_positives = 0
-    for probe_number, false_positives in enumerate(
-        aggregate_by_probe, start=1
-    ):
+    for probe_number, false_positives in enumerate(aggregate_by_probe, start=1):
         running_false_positives += false_positives
         rows.append(
             {
@@ -137,10 +126,10 @@ def measure_routing_precision(
     with ExitStack() as resources:
         shards = []
         for shard_id in range(NUM_SHARDS):
-            current_shard = Shard(str(shard_path(shard_id)))
+            current_shard = Shard(str(config.shard_path(shard_id)))
             resources.callback(current_shard.close)
             shards.append(current_shard)
-        with closing(sqlite3.connect(f"{BASE_DB.as_uri()}?mode=ro", uri=True)) as connection:
+        with closing(connect_read_only(BASE_DB)) as connection:
             orders = connection.execute(
                 "SELECT order_id, cust_id FROM orders ORDER BY order_id LIMIT ?",
                 (query_count,),
@@ -165,15 +154,13 @@ def measure_routing_precision(
                     "actual_shard": actual_shard,
                     "routed_shards": len(routed),
                     "actual_shard_found": int(actual_shard in routed_ids),
-                    "unnecessary_shards": len(
-                        routed_ids - {actual_shard}
-                    ),
+                    "unnecessary_shards": len(routed_ids - {actual_shard}),
                 }
             )
         return rows
 
 
-def write_csv(path: Path, rows: list[dict[str, object]]) -> None:
+def write_csv(path: Path, rows: Sequence[Mapping[str, object]]) -> None:
     """Write experiment rows using their dictionary keys as CSV columns."""
     path.parent.mkdir(parents=True, exist_ok=True)
     if not rows:
@@ -272,9 +259,9 @@ def main() -> None:
     if not BASE_DB.exists():
         raise FileNotFoundError(f"missing database: {BASE_DB}")
     missing_shards = [
-        str(shard_path(shard_id))
+        str(path)
         for shard_id in range(NUM_SHARDS)
-        if not shard_path(shard_id).exists()
+        if not (path := config.shard_path(shard_id)).exists()
     ]
     if missing_shards:
         raise FileNotFoundError("missing shard databases: " + ", ".join(missing_shards))
@@ -283,11 +270,11 @@ def main() -> None:
     routing_rows = measure_routing_precision(DEFAULT_ROUTING_QUERIES)
     write_csv(
         EVIDENCE_DIR / "fp-rate.csv",
-        [dict(row) for row in false_positive_rows],
+        false_positive_rows,
     )
     write_csv(
         EVIDENCE_DIR / "routing-precision.csv",
-        [dict(row) for row in routing_rows],
+        routing_rows,
     )
     figure_path = create_plot(false_positive_rows)
 

@@ -2,13 +2,13 @@
 
 import argparse
 import csv
-from contextlib import ExitStack, closing
 import math
 import sqlite3
 import sys
 import time
-from pathlib import Path
 from collections.abc import Callable
+from contextlib import ExitStack, closing
+from pathlib import Path
 
 PROJECT_ROOT: Path = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -16,9 +16,9 @@ sys.path.insert(0, str(PROJECT_ROOT))
 import config
 import executor
 from coordinator import Coordinator
+from models import SqlRows
 from parser import has_group_by, parse_where
 from shard import Shard
-from models import SqlRows
 
 
 DEFAULT_WORKERS: list[int] = [1, 2, 4, 8]
@@ -41,7 +41,7 @@ def parse_worker_series(value: str) -> list[int]:
 
 
 def timed(function: Callable[[], object]) -> tuple[float, object]:
-    """Return a callable's result and elapsed wall-clock time."""
+    """Return elapsed wall-clock time followed by the callable's result."""
     start = time.perf_counter()
     result = function()
     return time.perf_counter() - start, result
@@ -164,11 +164,8 @@ def main() -> None:
     if args.repetitions < 1 or args.warmups < 0:
         parser.error("--repetitions must be positive and --warmups cannot be negative")
 
-    base_path = PROJECT_ROOT / config.BASE_DB
-    shard_paths = [
-        PROJECT_ROOT / config.shard_path(i)
-        for i in range(config.NUM_SHARDS)
-    ]
+    base_path = config.BASE_DB
+    shard_paths = [config.shard_path(i) for i in range(config.NUM_SHARDS)]
     missing = [str(path) for path in [base_path, *shard_paths] if not path.exists()]
     if missing:
         parser.error("missing databases; run gen_data.py first: " + ", ".join(missing))
@@ -196,8 +193,7 @@ def main() -> None:
                         seconds, result = run_cold(
                             coordinator, args.override_sql, worker_count
                         )
-                        comparable = comparable_result(result, grouped)
-                        if not results_match(comparable, expected_result, grouped):
+                        if not results_match(result, expected_result, grouped):
                             raise RuntimeError("inconsistent MiniShardDB result")
                         append_rows(
                             rows, "MiniShardDB", "cold", worker_count,
@@ -216,8 +212,7 @@ def main() -> None:
                             seconds, result = run_warm(
                                 coordinator, pool, args.override_sql
                             )
-                            comparable = comparable_result(result, grouped)
-                            if not results_match(comparable, expected_result, grouped):
+                            if not results_match(result, expected_result, grouped):
                                 raise RuntimeError("inconsistent MiniShardDB result")
                             append_rows(
                                 rows, "MiniShardDB", "warm", worker_count,

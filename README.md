@@ -17,8 +17,10 @@ The implemented system includes the following:
   results.
 - The Bloom filter, parser, routing, flattening, grouped-merge, and security
   tests are present and cover the implemented vertical slice.
-- `Coordinator.run` dispatches selected shard database paths through
-  `executor.parallel` and merges the per-shard result lists.
+- `Coordinator.run` executes non-grouped `order_id` lookups directly on the
+  selected shards' existing SQLite connections, avoiding process startup and
+  dispatch overhead. Scans, customer queries, and grouped queries still use
+  `executor.parallel`; both paths merge the per-shard result lists.
 - `parser.py` validates the supported single-statement `SELECT` forms and
   separates SQL structure from numeric parameter values.
 - `security.py` implements login, role-based permission checks, and an audit
@@ -31,6 +33,9 @@ The implemented system includes the following:
   audits permitted and denied queries, and runs permitted queries. It also
   supports `--audit` for administrators and auditors. Password validation is
   not implemented yet.
+- `database.py` shares customer/order schema creation and read-only SQLite
+  connection setup across the generator, workers, and experiments. Callers
+  retain ownership of transactions and connection cleanup.
 - `models.py` is the single source of truth for shared typed contracts:
   `ParsedQuery`, `User`, generated customer/order records, serializable shard
   jobs, and the named SQL row/result aliases used across the application.
@@ -61,35 +66,12 @@ A working, demoable system **plus quantitative proof** that the advanced (distri
 
 ## Architecture
 
-```
- SQL --> AuthGate (RBAC check + audit log)
-              |
-              v
-        Coordinator (parser --> route)
-              │   cust_id  → partition map (cust_id % 8)
-              │   order_id → Bloom filter probes
-              v
-        executor (multiprocessing.Pool)
-shard0, shard1, shard2, …shard7   (SQLite files + .bloom)
-              v
-        Coordinator.merge --> result
-```
-
 Both relations are partitioned by `cust_id`: an order and its customer are stored
 on the same shard, so customer/order joins can be evaluated locally without
 replicating the full `Customers` relation to every shard. The centralized
 `base.db`
 contains the complete dataset and is used as the comparison baseline; the shard
 databases are derived copies.
-
-## Concepts → syllabus map
-
-| Module | Concept | Where |
-|---|---|---|
-| M1 | Selection cost, cost-based shard choice | `coordinator.route`, E3 |
-| M2 | RBAC, SQL-injection defense | `security.py`, parameterized executor |
-| M3 | Partitioning, parallel query processing | `shard.py`, `executor.py` |
-| M4 | Horizontal fragmentation, transparency, Bloom filters, distributed query processing | `coordinator.py`, `bloom.py` |
 
 ## Stack
 

@@ -1,6 +1,6 @@
 import pytest
 
-from parser import parse_supported_query, parse_table
+from parser import is_single_statement, parse_supported_query, parse_table
 
 
 def test_parse_table_from_clause():
@@ -42,3 +42,22 @@ def test_parse_supported_query_parameterizes_order_id():
 def test_parse_supported_query_rejects_injection(sql):
     with pytest.raises(ValueError):
         parse_supported_query(sql)
+
+
+@pytest.mark.parametrize("sql", [
+    "", "  \n\t", "SELECT * FROM orders;", "SELECT -- comment\n * FROM orders",
+    "SELECT /* comment */ * FROM orders", "SELECT * FROM orders */",
+])
+def test_statement_safety_checks_are_consistent(sql):
+    assert not is_single_statement(sql)
+    with pytest.raises(ValueError, match="Only one SQL statement is allowed"):
+        parse_supported_query(sql)
+
+
+def test_supported_query_preserves_whitespace_normalization():
+    sql = "  SELECT  *\n FROM orders\tWHERE ORDER_ID = 0  "
+    assert is_single_statement(sql)
+    parsed = parse_supported_query(sql)
+    assert parsed.sql == "SELECT * FROM orders WHERE ORDER_ID = ?"
+    assert parsed.params == (0,)
+    assert parsed.where == ("order_id", 0)

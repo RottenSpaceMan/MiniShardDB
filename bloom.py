@@ -1,3 +1,5 @@
+"""A compact membership filter with a stable, pickle-compatible bit layout."""
+
 import hashlib
 import math
 
@@ -5,7 +7,13 @@ import config
 
 
 class Bloom:
-    def __init__(self, expected_items: int, false_positive_rate: float = config.BLOOM_FALSE_POSITIVE_RATE) -> None:
+    """Store approximate membership using double-hashed bit positions."""
+
+    def __init__(
+        self,
+        expected_items: int,
+        false_positive_rate: float = config.BLOOM_FALSE_POSITIVE_RATE,
+    ) -> None:
         if expected_items <= 0:
             raise ValueError("expected_items must be greater than zero")
         if not 0 < false_positive_rate < 1:
@@ -35,7 +43,7 @@ class Bloom:
     def add(self, key: object) -> None:
         for bit_index in self._hashes(key):
             self.bits[bit_index >> 3] |= 1 << (bit_index & 7)
-    
+
     def __contains__(self, item: object) -> bool:
         return all(
             self.bits[bit_index >> 3] >> (bit_index & 7) & 1

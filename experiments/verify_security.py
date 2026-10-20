@@ -1,18 +1,18 @@
 """Compare raw SQLite execution with the supported-query security parser."""
 
 import csv
-from contextlib import closing
 import sqlite3
 import sys
+from contextlib import closing
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT: Path = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from parser import parse_supported_query
 
 
-PAYLOADS = [
+PAYLOADS: list[str] = [
     "SELECT * FROM orders WHERE order_id = 1 OR 1=1",
     "SELECT * FROM orders WHERE order_id = 1 OR '1'='1'",
     "SELECT * FROM orders; DROP TABLE orders;",
@@ -50,6 +50,7 @@ def safe_result(payload: str) -> str:
 
 
 def main() -> None:
+    """Write acceptance results for the unsafe script and supported-query parser."""
     output_path = PROJECT_ROOT / "report" / "evidence" / "injection-results.csv"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", newline="", encoding="utf-8") as output:

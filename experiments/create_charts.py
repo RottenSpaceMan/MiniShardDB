@@ -81,10 +81,11 @@ def main() -> None:
         bars[best_index].set_edgecolor("#1b5e20")
         bars[best_index].set_linewidth(2.5)
 
+        label_offset = max(highs) * 0.025
         for index, value in enumerate(values):
             axis.text(
                 index,
-                highs[index] + max(highs) * 0.025,
+                highs[index] + label_offset,
                 f"{value:.3f}s",
                 ha="center",
                 va="bottom",

@@ -1,11 +1,16 @@
+"""Run supported SQL queries or inspect the role-protected audit log."""
+
 import argparse
-from contextlib import ExitStack
 import sys
+from contextlib import ExitStack
+
 import config
 from coordinator import Coordinator
+from models import User
 from parser import parse_supported_query
-from security import AuthGate, User
+from security import AuthGate
 from shard import Shard
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -50,9 +55,9 @@ def run_query(query: str) -> None:
     user: User = gate.login()
     try:
         parsed = parse_supported_query(query)
-    except ValueError as e:
+    except ValueError as error:
         gate.audit(user, query, allowed=False, shards_touched=0)
-        sys.exit(f"DENIED: {e}")
+        sys.exit(f"DENIED: {error}")
 
     if not gate.allow(user, query):
         gate.audit(user, query, allowed=False, shards_touched=0)
@@ -63,17 +68,14 @@ def run_query(query: str) -> None:
         sys.exit("Missing shard databases; run gen_data.py first.")
 
     with ExitStack() as resources:
-        shards = [
-            resources.enter_context(Shard(str(path)))
-            for path in paths
-        ]
-        coord: Coordinator = Coordinator(shards)
-        results = coord.run(parsed.sql, parsed.params, parsed.where)
+        shards = [resources.enter_context(Shard(str(path))) for path in paths]
+        coordinator = Coordinator(shards)
+        results = coordinator.run(parsed.sql, parsed.params, parsed.where)
         gate.audit(
             user,
             query,
             allowed=True,
-            shards_touched=len(coord.route(parsed.where)),
+            shards_touched=len(coordinator.route(parsed.where)),
         )
         rows = results.items() if isinstance(results, dict) else results
         for row in rows:

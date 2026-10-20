@@ -1,14 +1,17 @@
 """A SQLite shard with a persisted order-ID Bloom filter."""
+
+import pickle
 import sqlite3
 from collections.abc import Sequence
 
-from bloom import Bloom
 import config
-import pickle
+from bloom import Bloom
+from database import create_schema
 from models import SqlParams, SqlRow, SqlRows
 
+
 class Shard:
-    """One SQLite file + its Bloom filter"""
+    """Own one SQLite connection and its optional order-ID filter."""
     def __init__(self, path: str, rebuild_bloom: bool = False) -> None:
         self.path: str = path
         self.bloom: Bloom | None = None
@@ -23,37 +26,24 @@ class Shard:
 
     def create(self) -> None:
         """Create the co-located customer and order tables if needed."""
-        self.cur.execute("""
-            CREATE TABLE IF NOT EXISTS customers (
-                cust_id INTEGER PRIMARY KEY,
-                name TEXT NOT NULL,
-                email TEXT NOT NULL
-            )
-        """)
-        self.cur.execute("""
-            CREATE TABLE IF NOT EXISTS orders (
-                order_id INTEGER PRIMARY KEY,
-                cust_id INTEGER NOT NULL,
-                amount REAL NOT NULL,
-                created_at TEXT NOT NULL,
-                status TEXT NOT NULL,
-                FOREIGN KEY (cust_id) REFERENCES customers(cust_id)
-            )
-        """)
+        create_schema(self.con)
         self.con.commit()
 
-    def insert_orders(self, rows: Sequence[SqlRow]) -> None:
-        """Insert multiple orders into the shard.(tuples of (order_id, cust_id, amount, created_at, status))"""
-        # A stale filter could hide newly committed orders from routing.
+    def _invalidate_bloom(self) -> None:
         self.bloom = None
         config.bloom_path(self.path).unlink(missing_ok=True)
+
+    def insert_orders(self, rows: Sequence[SqlRow]) -> None:
+        """Insert order rows and invalidate membership metadata before writing."""
+        # A stale filter could hide newly committed orders from routing.
+        self._invalidate_bloom()
         with self.con:
-            self.con.executemany('INSERT INTO orders VALUES (?,?,?,?,?)', rows)
-    
+            self.con.executemany("INSERT INTO orders VALUES (?,?,?,?,?)", rows)
+
     def insert_customers(self, rows: Sequence[SqlRow]) -> None:
-        """Insert multiple customers into the shard.(tuples of (cust_id, name, email))"""
+        """Insert customer rows in schema column order."""
         with self.con:
-            self.con.executemany('INSERT INTO customers VALUES (?,?,?)', rows)
+            self.con.executemany("INSERT INTO customers VALUES (?,?,?)", rows)
 
     def build_bloom(
         self,
@@ -63,19 +53,16 @@ class Shard:
         """Build the order-ID filter used by query routing."""
         if column != "order_id":
             raise ValueError("Only order_id Bloom filters are supported by routing")
-        n = self.con.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
-        if n == 0:
-            self.bloom = None
-            bloom_path = config.bloom_path(self.path)
-            if bloom_path.exists():
-                bloom_path.unlink()
+        order_count = self.con.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
+        if order_count == 0:
+            self._invalidate_bloom()
             return
-        b = Bloom(n, p)
-        for (v,) in self.con.execute("SELECT order_id FROM orders"):
-            b.add(v)
-        self.bloom = b
+        bloom = Bloom(order_count, p)
+        for (order_id,) in self.con.execute("SELECT order_id FROM orders"):
+            bloom.add(order_id)
+        self.bloom = bloom
         with config.bloom_path(self.path).open("wb") as bloom_file:
-            pickle.dump(b, bloom_file)
+            pickle.dump(bloom, bloom_file)
 
     def execute(self, sql: str, params: SqlParams) -> SqlRows:
         """Execute a SELECT; use insertion APIs to keep Bloom state consistent."""
@@ -86,10 +73,8 @@ class Shard:
         return self.cur.fetchall()
 
     def bloom_has(self, key: object) -> bool:
-        """Check if the key is in the Bloom filter. If the Bloom filter is None, return True (must scan)."""
-        if self.bloom is None:
-            return True
-        return key in self.bloom
+        """Keep a shard as a candidate when its filter is missing."""
+        return self.bloom is None or key in self.bloom
 
     def close(self) -> None:
         """Close the database connection."""

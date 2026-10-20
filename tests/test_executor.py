@@ -1,5 +1,6 @@
-from contextlib import closing
 import sqlite3
+from contextlib import closing
+from types import SimpleNamespace
 
 import pytest
 
@@ -24,6 +25,17 @@ def test_worker_executes_parameterized_reads(tmp_path):
     ) == [(42,)]
     with pytest.raises(sqlite3.OperationalError, match="readonly"):
         executor.run_on_shard(ShardJob(str(path), "DELETE FROM orders", ()))
+
+
+def test_make_jobs_snapshots_parameters_for_all_targets():
+    params = [42]
+    targets = [SimpleNamespace(path="one.db"), SimpleNamespace(path="two.db")]
+    jobs = executor.make_jobs(targets, "SELECT ?", params)
+    params.append(99)
+    assert jobs == [
+        ShardJob("one.db", "SELECT ?", (42,)),
+        ShardJob("two.db", "SELECT ?", (42,)),
+    ]
 
 
 def test_no_targets_does_not_create_pool(monkeypatch):
