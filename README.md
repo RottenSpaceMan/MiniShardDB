@@ -4,7 +4,7 @@
 
 ## What it is
 
-MiniShardDB horizontally fragments the `Orders` and `Customers` relations across 8 SQLite shards using hash partitioning on `cust_id`. The benchmark dataset scales to 1M orders. A **coordinator** layer gives clients *fragmentation and location transparency*: supported SQL queries do not expose shard locations. The current vertical slice routes point queries on `order_id` with per-shard Bloom filters, executes selected shards in parallel, merges grouped results, and applies an **RBAC gate** (admin / analyst / auditor) before execution.
+MiniShardDB horizontally fragments the `Orders` and `Customers` relations across 8 SQLite shards using hash partitioning on `cust_id`. The benchmark dataset scales to 1M orders. A **coordinator** layer gives clients *fragmentation and location transparency*: supported SQL queries do not expose shard locations. The query path routes point queries on `order_id` with per-shard Bloom filters, executes selected shards in parallel, merges grouped results, and applies an **RBAC gate** (admin / analyst / auditor) before execution.
 
 ## Current status
 
@@ -16,7 +16,7 @@ The implemented system includes the following:
 - `Coordinator.merge` flattens normal results and combines grouped numeric
   results.
 - The Bloom filter, parser, routing, flattening, grouped-merge, and security
-  tests are present and cover the implemented vertical slice.
+  tests cover the implemented query paths.
 - `Coordinator.run` executes non-grouped `order_id` lookups directly on the
   selected shards' existing SQLite connections, avoiding process startup and
   dispatch overhead. Scans, customer queries, and grouped queries still use
@@ -41,8 +41,8 @@ The implemented system includes the following:
   jobs, and the named SQL row/result aliases used across the application.
 - Centralized SQLite was faster for cold execution because MiniShardDB incurred process-pool and multi-connection startup overhead. After pool reuse, MiniShardDB benefited from concurrent shard scans and outperformed the centralized baseline. Larger datasets are expected to reduce the relative impact of startup overhead, but ultimate scaling will depend on whether the workload is CPU-bound or limited by shared storage bandwidth.
 Bloom-filter, routing, parallelism, and injection evidence is checked into
-`report/evidence/`. The report, demo video, and final performance-target
-interpretation still need to be assembled from those measurements.
+`report/evidence/`. The report uses those measurements; the demo video remains
+outside this repository.
 
 ## Problem being addressed
 
@@ -52,7 +52,8 @@ On a centralized single-node store:
 
 ## End goal
 
-A working, demoable system **plus quantitative proof** that the advanced (distributed) approach beats the conventional (centralized) one:
+A working system with measurements comparing the distributed and centralized
+approaches:
 
 | Metric | Target |
 |---|---|
@@ -177,7 +178,7 @@ configuration and writes raw measurements to
 `report/figures/scaling-matrix-cold.png` and
 `report/figures/scaling-matrix-warm.png`. Each subplot represents one
 row-count/shard-count pair; bars show the median and whiskers show the
-inlier range after robust 3.5-MAD outlier rejection. Raw repetitions remain
+inlier range after a 3.5-MAD outlier filter. Raw repetitions remain
 available in the CSV but are not plotted as points, preventing timing spikes
 from compressing the chart. Each subplot title reports the actual time
 represented by its `1.0×` baseline in milliseconds and seconds. Values are
@@ -204,7 +205,7 @@ order generation; SQLite writes remain in the parent process.
 - [x] Move `parse_where` out of `cli.py` -> `parser.py`
 - [x] Implement grouped-result merging in `Coordinator.merge`
 - [x] Fix `executor.parallel`: pass `s.path` (not Shard objects), return per-shard result lists
-- [x] `config.py`: shard paths, Bloom settings, data-generation defaults, worker cap, and `shard_of(cust_id)` - single source of truth
+- [x] `config.py`: shard paths, Bloom settings, data-generation defaults, worker cap, and `shard_of(cust_id)`
 - [x] `decisions.md`: config-as-source-of-truth
 - [x] Add `.gitignore` (`.venv/`, `__pycache__/`, `data/`, `*.bloom`) + first push
 
@@ -236,6 +237,5 @@ order generation; SQLite writes remain in the parent process.
 ### Phase 4 - Week 4: evaluation & wrap
 - [x] **E1:** Bloom FP-rate curve vs. theory + routing precision
 - [x] Re-run all experiments on final data → `report/figures/`
-- [ ] Report (8–12 pages)
+- [x] Report (8–12 pages)
 - [ ] Demo video (3–4 min, scripted)
-- [ ] Viva prep: why Bloom with a partition map? shard failure during a query?

@@ -425,7 +425,7 @@ def make_chart(
         0.5,
         0.01,
         f"1.0 = {worker_series[0]}-worker reference; bars: median; whiskers: inlier range; "
-        "whiskers: robust 3.5-MAD inlier range; raw repetitions remain in CSV",
+        "whiskers: 3.5-MAD inlier range; raw repetitions remain in CSV",
         ha="center",
     )
     figure.text(

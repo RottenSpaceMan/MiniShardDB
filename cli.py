@@ -11,7 +11,6 @@ from parser import parse_supported_query
 from security import AuthGate
 from shard import Shard
 
-
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Run a SQL query or view the audit log."
